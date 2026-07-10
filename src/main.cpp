@@ -242,18 +242,22 @@ void checkGpioBoot() {
 }
 
 void checkGpioRuntime() {
-  if (digitalRead(BOOT_BUTTON_PIN) == LOW) {
-    unsigned long start = millis();
-    while (digitalRead(BOOT_BUTTON_PIN) == LOW &&
-           millis() - start < GPIO_HOLD_MS + 1000) {
-      esp_task_wdt_reset();
-      delay(50);
-    }
-    if (millis() - start >= GPIO_HOLD_MS) {
-      Serial.println("GPIO0 held >5s -> reset config + AP mode");
-      configManager.reset();
-      ESP.restart();
-    }
+  static bool holding = false;
+  static unsigned long holdStart = 0;
+
+  bool pressed = digitalRead(BOOT_BUTTON_PIN) == LOW;
+
+  if (pressed && !holding) {
+    holding = true;
+    holdStart = millis();
+  } else if (!pressed) {
+    holding = false;
+  }
+
+  if (holding && millis() - holdStart >= GPIO_HOLD_MS) {
+    Serial.println("GPIO0 held >5s -> reset config + AP mode");
+    configManager.reset();
+    ESP.restart();
   }
 }
 
