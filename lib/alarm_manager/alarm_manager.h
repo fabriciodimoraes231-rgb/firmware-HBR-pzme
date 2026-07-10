@@ -1,7 +1,7 @@
 #pragma once
-#include <Arduino.h>
-#include "ConfigManager.h"
-#include "SensorManager.h"
+#include "config.h"
+#include "phase_data.h"
+#include <cstdint>
 
 constexpr uint8_t MAX_ALARMS = 12;
 
@@ -30,8 +30,8 @@ struct AlarmState {
 class AlarmManager {
 public:
   AlarmManager();
-  void check(const PhaseData *phases, uint8_t numPhases,
-             float temperature, const Config &cfg, AlarmState &state);
+  void check(const PhaseData *phases, uint8_t numPhases, float temperature,
+             const Config &cfg, AlarmState &state);
   void getNewAlarms(const AlarmState &current, AlarmState &newAlarms);
   void getResolvedAlarms(const AlarmState &current, AlarmState &resolved);
   void getActiveAlarms(const AlarmState &current, AlarmState &active);
@@ -40,6 +40,6 @@ public:
 private:
   AlarmState m_previous;
   void resetState(AlarmState &state);
-  void setAlarm(AlarmState &state, uint8_t idx, AlarmType type,
-                uint8_t phase, float value, float threshold);
+  void setAlarm(AlarmState &state, uint8_t idx, AlarmType type, uint8_t phase,
+                float value, float threshold);
 };
