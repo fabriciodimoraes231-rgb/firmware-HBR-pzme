@@ -1,4 +1,4 @@
-#include "ConfigManager.h"
+#include "config_manager.h"
 
 ConfigManager::ConfigManager() {}
 
@@ -15,16 +15,22 @@ void ConfigManager::load(Config &cfg) {
   prefs.getString("topic_prefix", cfg.topic_prefix, sizeof(cfg.topic_prefix));
 
   cfg.num_phases = prefs.getUChar("num_phases", 1);
-  if (cfg.num_phases < 1) cfg.num_phases = 1;
-  if (cfg.num_phases > MAX_PHASES) cfg.num_phases = MAX_PHASES;
+  if (cfg.num_phases < 1)
+    cfg.num_phases = 1;
+  if (cfg.num_phases > MAX_PHASES)
+    cfg.num_phases = MAX_PHASES;
   cfg.nominal_voltage = prefs.getFloat("nominal_voltage", 127.0f);
   cfg.send_interval_s = prefs.getUShort("send_interval_s", 5);
-  if (cfg.send_interval_s < 1) cfg.send_interval_s = 1;
-  if (cfg.send_interval_s > 3600) cfg.send_interval_s = 3600;
+  if (cfg.send_interval_s < 1)
+    cfg.send_interval_s = 1;
+  if (cfg.send_interval_s > 3600)
+    cfg.send_interval_s = 3600;
 
   cfg.alarm_interval_s = prefs.getUShort("alarm_interval_s", 60);
-  if (cfg.alarm_interval_s < 5) cfg.alarm_interval_s = 5;
-  if (cfg.alarm_interval_s > 3600) cfg.alarm_interval_s = 3600;
+  if (cfg.alarm_interval_s < 5)
+    cfg.alarm_interval_s = 5;
+  if (cfg.alarm_interval_s > 3600)
+    cfg.alarm_interval_s = 3600;
 
   cfg.v_max = prefs.getFloat("v_max", 242.0f);
   cfg.v_min = prefs.getFloat("v_min", 198.0f);
