@@ -1,18 +1,23 @@
+#include "aht10_sensor.h"
+#include "alarm_manager.h"
+#include "app_config.h"
+#include "captive_portal.h"
+#include "config_manager.h"
+#include "mqtt_manager.h"
+#include "pzem_sensor.h"
+#include "time_manager.h"
+#include "wifi_manager.h"
 #include <Arduino.h>
-#include <esp_task_wdt.h>
 #include <ESPAsyncWebServer.h>
-#include "ConfigManager.h"
-#include "CaptivePortal.h"
-#include "SensorManager.h"
-#include "AlarmManager.h"
-#include "TimeManager.h"
-#include "MqttManager.h"
+#include <esp_task_wdt.h>
 
 ConfigManager configManager;
-SensorManager sensorManager;
+PzemSensor pzemSensor;
+Aht10Sensor aht10Sensor;
 AlarmManager alarmManager;
 TimeManager timeManager;
 MqttManager mqttManager;
+WifiManager wifiManager;
 
 Config config;
 PhaseData phases[MAX_PHASES];
@@ -25,9 +30,6 @@ unsigned long lastRead = 0;
 unsigned long lastSend = 0;
 unsigned long lastAlarmSend = 0;
 unsigned long lastMqttTry = 0;
-constexpr unsigned long MQTT_RETRY_MS = 5000;
-constexpr unsigned long GPIO_HOLD_MS = 5000;
-constexpr uint8_t LED_PIN = 2;
 
 bool shouldRebootAp = false;
 float currentTemp = NAN;
@@ -224,11 +226,11 @@ loadData();setInterval(loadData,3000)
 )rawliteral";
 
 void checkGpioBoot() {
-  pinMode(0, INPUT_PULLUP);
+  pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
   unsigned long start = millis();
   bool held = true;
-  while (millis() - start < 3000) {
-    if (digitalRead(0) != LOW) {
+  while (millis() - start < BOOT_AP_HOLD_MS) {
+    if (digitalRead(BOOT_BUTTON_PIN) != LOW) {
       held = false;
     }
     delay(50);
@@ -240,9 +242,10 @@ void checkGpioBoot() {
 }
 
 void checkGpioRuntime() {
-  if (digitalRead(0) == LOW) {
+  if (digitalRead(BOOT_BUTTON_PIN) == LOW) {
     unsigned long start = millis();
-    while (digitalRead(0) == LOW && millis() - start < GPIO_HOLD_MS + 1000) {
+    while (digitalRead(BOOT_BUTTON_PIN) == LOW &&
+           millis() - start < GPIO_HOLD_MS + 1000) {
       esp_task_wdt_reset();
       delay(50);
     }
@@ -254,13 +257,9 @@ void checkGpioRuntime() {
   }
 }
 
-void onConfigUpdated(const Config &cfg) {
-  config = cfg;
-}
+void onConfigUpdated(const Config &cfg) { config = cfg; }
 
-void onTimeUpdated(unsigned long epoch) {
-  timeManager.setFromEpoch(epoch);
-}
+void onTimeUpdated(unsigned long epoch) { timeManager.setFromEpoch(epoch); }
 
 void setup() {
   Serial.begin(115200);
@@ -294,23 +293,10 @@ void setup() {
     return;
   }
 
-  Serial.printf("WiFi %s ... ", config.wifi_ssid);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(config.wifi_ssid, config.wifi_pass);
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
-    esp_task_wdt_reset();
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println(" OK");
-    Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+  if (wifiManager.connect(config.wifi_ssid, config.wifi_pass)) {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, HIGH);
   } else {
-    Serial.println(" FAIL - reiniciando em AP mode");
     delay(1000);
     configManager.reset();
     CaptivePortal portal;
@@ -318,7 +304,7 @@ void setup() {
     return;
   }
 
-  esp_task_wdt_init(10, true);
+  esp_task_wdt_init(WDT_TIMEOUT_S, true);
   esp_task_wdt_add(NULL);
 
   stationServer.on("/", HTTP_GET, [](AsyncWebServerRequest *r) {
@@ -327,7 +313,8 @@ void setup() {
 
   stationServer.on("/api/data", HTTP_GET, [](AsyncWebServerRequest *r) {
     String ts = timeManager.getTimestamp();
-    alarmManager.check(phases, config.num_phases, currentTemp, config, alarmState);
+    alarmManager.check(phases, config.num_phases, currentTemp, config,
+                       alarmState);
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -383,7 +370,9 @@ void setup() {
     JsonArray alarmsArr = doc["alarms"].to<JsonArray>();
     for (uint8_t i = 0; i < alarmState.count; i++) {
       if (alarmState.active[i]) {
-        alarmsArr.add(String(alarmManager.alarmName(alarmState.events[i].type)) + "_F" + String(alarmState.events[i].phase));
+        alarmsArr.add(
+            String(alarmManager.alarmName(alarmState.events[i].type)) + "_F" +
+            String(alarmState.events[i].phase));
       }
     }
 
@@ -393,72 +382,113 @@ void setup() {
   });
 
   static String configBody = "";
-  stationServer.on("/api/config", HTTP_POST,
-    [](AsyncWebServerRequest *r) {
-      if (configBody.length() == 0) {
-        r->send(400, "application/json", "{\"status\":\"error\",\"message\":\"Empty body\"}");
-        return;
-      }
+  stationServer.on(
+      "/api/config", HTTP_POST,
+      [](AsyncWebServerRequest *r) {
+        if (configBody.length() == 0) {
+          r->send(400, "application/json",
+                  "{\"status\":\"error\",\"message\":\"Empty body\"}");
+          return;
+        }
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-      StaticJsonDocument<512> doc;
+        StaticJsonDocument<512> doc;
 #pragma GCC diagnostic pop
-      DeserializationError err = deserializeJson(doc, configBody);
-      if (err) {
-        r->send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+        DeserializationError err = deserializeJson(doc, configBody);
+        if (err) {
+          r->send(400, "application/json",
+                  "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+          configBody = "";
+          return;
+        }
+
+        if (doc.containsKey("nominal_voltage"))
+          config.nominal_voltage = doc["nominal_voltage"];
+        if (doc.containsKey("num_phases")) {
+          config.num_phases = doc["num_phases"];
+          if (config.num_phases < 1)
+            config.num_phases = 1;
+          if (config.num_phases > 3)
+            config.num_phases = 3;
+        }
+        if (doc.containsKey("send_interval_s")) {
+          config.send_interval_s = doc["send_interval_s"];
+          if (config.send_interval_s < 1)
+            config.send_interval_s = 1;
+          if (config.send_interval_s > 3600)
+            config.send_interval_s = 3600;
+        }
+        if (doc.containsKey("alarm_interval_s")) {
+          config.alarm_interval_s = doc["alarm_interval_s"];
+          if (config.alarm_interval_s < 5)
+            config.alarm_interval_s = 5;
+          if (config.alarm_interval_s > 3600)
+            config.alarm_interval_s = 3600;
+        }
+        if (doc.containsKey("v_max"))
+          config.v_max = doc["v_max"];
+        if (doc.containsKey("v_min"))
+          config.v_min = doc["v_min"];
+        if (doc.containsKey("a_max"))
+          config.a_max = doc["a_max"];
+        if (doc.containsKey("a_min"))
+          config.a_min = doc["a_min"];
+        if (doc.containsKey("temp_max"))
+          config.temp_max = doc["temp_max"];
+        if (doc.containsKey("v_factor")) {
+          JsonArray a = doc["v_factor"];
+          for (uint8_t i = 0; i < MAX_PHASES && i < a.size(); i++)
+            config.v_factor[i] = a[i];
+        }
+        if (doc.containsKey("a_factor")) {
+          JsonArray a = doc["a_factor"];
+          for (uint8_t i = 0; i < MAX_PHASES && i < a.size(); i++)
+            config.a_factor[i] = a[i];
+        }
+        if (doc.containsKey("w_factor")) {
+          JsonArray a = doc["w_factor"];
+          for (uint8_t i = 0; i < MAX_PHASES && i < a.size(); i++)
+            config.w_factor[i] = a[i];
+        }
+
         configBody = "";
-        return;
-      }
 
-      if (doc.containsKey("nominal_voltage")) config.nominal_voltage = doc["nominal_voltage"];
-      if (doc.containsKey("num_phases")) { config.num_phases = doc["num_phases"]; if (config.num_phases < 1) config.num_phases = 1; if (config.num_phases > 3) config.num_phases = 3; }
-      if (doc.containsKey("send_interval_s")) { config.send_interval_s = doc["send_interval_s"]; if (config.send_interval_s < 1) config.send_interval_s = 1; if (config.send_interval_s > 3600) config.send_interval_s = 3600; }
-      if (doc.containsKey("alarm_interval_s")) { config.alarm_interval_s = doc["alarm_interval_s"]; if (config.alarm_interval_s < 5) config.alarm_interval_s = 5; if (config.alarm_interval_s > 3600) config.alarm_interval_s = 3600; }
-      if (doc.containsKey("v_max")) config.v_max = doc["v_max"];
-      if (doc.containsKey("v_min")) config.v_min = doc["v_min"];
-      if (doc.containsKey("a_max")) config.a_max = doc["a_max"];
-      if (doc.containsKey("a_min")) config.a_min = doc["a_min"];
-      if (doc.containsKey("temp_max")) config.temp_max = doc["temp_max"];
-      if (doc.containsKey("v_factor")) { JsonArray a = doc["v_factor"]; for (uint8_t i = 0; i < MAX_PHASES && i < a.size(); i++) config.v_factor[i] = a[i]; }
-      if (doc.containsKey("a_factor")) { JsonArray a = doc["a_factor"]; for (uint8_t i = 0; i < MAX_PHASES && i < a.size(); i++) config.a_factor[i] = a[i]; }
-      if (doc.containsKey("w_factor")) { JsonArray a = doc["w_factor"]; for (uint8_t i = 0; i < MAX_PHASES && i < a.size(); i++) config.w_factor[i] = a[i]; }
+        configManager.save(config);
 
-      configBody = "";
-
-      configManager.save(config);
-
-      r->send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Config saved. Rebooting.\"}");
-      delay(500);
-      ESP.restart();
-    },
-    NULL,
-    [](AsyncWebServerRequest *r, uint8_t *data, size_t len, size_t index, size_t total) {
-      configBody += String((char *)data, len);
-    }
-  );
+        r->send(200, "application/json",
+                "{\"status\":\"ok\",\"message\":\"Config saved. Rebooting.\"}");
+        delay(500);
+        ESP.restart();
+      },
+      NULL,
+      [](AsyncWebServerRequest *r, uint8_t *data, size_t len, size_t index,
+         size_t total) { configBody += String((char *)data, len); });
 
   static String mqttConfigBody = "";
-  stationServer.on("/api/mqtt-config", HTTP_POST,
-    [](AsyncWebServerRequest *r) {
-      if (mqttConfigBody.length() == 0) {
-        r->send(400, "application/json", "{\"status\":\"error\",\"message\":\"Empty body\"}");
-        return;
-      }
-      if (!mqttManager.isConnected()) {
-        r->send(503, "application/json", "{\"status\":\"error\",\"message\":\"MQTT not connected\"}");
+  stationServer.on(
+      "/api/mqtt-config", HTTP_POST,
+      [](AsyncWebServerRequest *r) {
+        if (mqttConfigBody.length() == 0) {
+          r->send(400, "application/json",
+                  "{\"status\":\"error\",\"message\":\"Empty body\"}");
+          return;
+        }
+        if (!mqttManager.isConnected()) {
+          r->send(503, "application/json",
+                  "{\"status\":\"error\",\"message\":\"MQTT not connected\"}");
+          mqttConfigBody = "";
+          return;
+        }
+        mqttManager.publishConfig(config, mqttConfigBody.c_str());
         mqttConfigBody = "";
-        return;
-      }
-      mqttManager.publishConfig(config, mqttConfigBody.c_str());
-      mqttConfigBody = "";
-      r->send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Config publicada via MQTT\"}");
-    },
-    NULL,
-    [](AsyncWebServerRequest *r, uint8_t *data, size_t len, size_t index, size_t total) {
-      mqttConfigBody += String((char *)data, len);
-    }
-  );
+        r->send(
+            200, "application/json",
+            "{\"status\":\"ok\",\"message\":\"Config publicada via MQTT\"}");
+      },
+      NULL,
+      [](AsyncWebServerRequest *r, uint8_t *data, size_t len, size_t index,
+         size_t total) { mqttConfigBody += String((char *)data, len); });
 
   stationServer.begin();
   Serial.printf("HTTP: http://%s\n", WiFi.localIP().toString().c_str());
@@ -468,7 +498,8 @@ void setup() {
   mqttManager.setConfigCallback(onConfigUpdated);
   mqttManager.setTimeCallback(onTimeUpdated);
   mqttManager.connect(config);
-  sensorManager.init();
+  pzemSensor.init();
+  aht10Sensor.init();
 }
 
 void loop() {
@@ -489,8 +520,8 @@ void loop() {
 
   if (now - lastRead >= config.send_interval_s * 1000) {
     lastRead = now;
-    sensorManager.read(phases, config.num_phases, config);
-    currentTemp = sensorManager.getTemperature();
+    pzemSensor.read(phases, config.num_phases, config);
+    currentTemp = aht10Sensor.getTemperature();
     for (uint8_t i = 0; i < config.num_phases; i++) {
       phases[i].temperature = currentTemp;
     }
@@ -505,7 +536,8 @@ void loop() {
   }
 
   if (mqttManager.isConnected()) {
-    alarmManager.check(phases, config.num_phases, currentTemp, config, alarmState);
+    alarmManager.check(phases, config.num_phases, currentTemp, config,
+                       alarmState);
 
     alarmManager.getNewAlarms(alarmState, newAlarms);
     for (uint8_t i = 0; i < newAlarms.count; i++) {
@@ -528,8 +560,8 @@ void loop() {
       alarmManager.getActiveAlarms(alarmState, activeAlarms);
       for (uint8_t i = 0; i < activeAlarms.count; i++) {
         if (activeAlarms.active[i]) {
-          mqttManager.publishAlarm(config, activeAlarms.events[i], "ALARM_REFRESH",
-                                   timeManager.getTimestamp());
+          mqttManager.publishAlarm(config, activeAlarms.events[i],
+                                   "ALARM_REFRESH", timeManager.getTimestamp());
         }
       }
     }
