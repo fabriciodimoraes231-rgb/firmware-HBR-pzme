@@ -1,4 +1,4 @@
-#include "MqttManager.h"
+#include "mqtt_manager.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -6,7 +6,8 @@
 MqttManager *MqttManager::m_instance = nullptr;
 
 MqttManager::MqttManager()
-  : m_mqtt(m_wifiClient), m_configured(false), m_configCb(nullptr), m_timeCb(nullptr) {
+    : m_mqtt(m_wifiClient), m_configured(false), m_configCb(nullptr),
+      m_timeCb(nullptr) {
   m_instance = this;
 }
 
@@ -46,17 +47,13 @@ void MqttManager::loop() {
   }
 }
 
-bool MqttManager::isConnected() {
-  return m_mqtt.connected();
-}
+bool MqttManager::isConnected() { return m_mqtt.connected(); }
 
 void MqttManager::setConfigCallback(void (*cb)(const Config &)) {
   m_configCb = cb;
 }
 
-void MqttManager::setTimeCallback(void (*cb)(unsigned long)) {
-  m_timeCb = cb;
-}
+void MqttManager::setTimeCallback(void (*cb)(unsigned long)) { m_timeCb = cb; }
 
 String MqttManager::buildTopic(const Config &cfg, const char *suffix) {
   String t = cfg.topic_prefix;
@@ -68,7 +65,7 @@ String MqttManager::buildTopic(const Config &cfg, const char *suffix) {
 }
 
 void MqttManager::publishData(const Config &cfg, const PhaseData *phases,
-                               float temperature, const String &datetime) {
+                              float temperature, const String &datetime) {
   StaticJsonDocument<1024> doc;
   doc["datetime"] = datetime;
   doc["v_nominal"] = cfg.nominal_voltage;
@@ -112,7 +109,7 @@ void MqttManager::publishData(const Config &cfg, const PhaseData *phases,
 }
 
 void MqttManager::publishAlarm(const Config &cfg, const AlarmEvent &event,
-                                const char *type, const String &datetime) {
+                               const char *type, const String &datetime) {
   StaticJsonDocument<256> doc;
   doc["type"] = type;
   doc["alarm"] = AlarmManager::alarmName(event.type);
@@ -158,7 +155,8 @@ void MqttManager::publishStatus(const Config &cfg, bool online) {
 }
 
 void MqttManager::callback(char *topic, byte *payload, unsigned int len) {
-  if (!m_instance) return;
+  if (!m_instance)
+    return;
 
   String msg;
   for (unsigned i = 0; i < len; i++) {
@@ -176,9 +174,11 @@ void MqttManager::callback(char *topic, byte *payload, unsigned int len) {
 void MqttManager::handleConfig(const String &msg) {
   StaticJsonDocument<512> doc;
   DeserializationError err = deserializeJson(doc, msg);
-  if (err) return;
+  if (err)
+    return;
 
-  if (doc.containsKey("status")) return;
+  if (doc.containsKey("status"))
+    return;
 
   Config cfg = m_lastCfg;
 
@@ -201,20 +201,25 @@ void MqttManager::handleConfig(const String &msg) {
     strlcpy(cfg.mqtt_pass, doc["mqtt_pass"], sizeof(cfg.mqtt_pass));
   }
   if (doc.containsKey("mqtt_topic_prefix")) {
-    strlcpy(cfg.topic_prefix, doc["mqtt_topic_prefix"], sizeof(cfg.topic_prefix));
+    strlcpy(cfg.topic_prefix, doc["mqtt_topic_prefix"],
+            sizeof(cfg.topic_prefix));
   }
   if (doc.containsKey("nominal_voltage")) {
     cfg.nominal_voltage = doc["nominal_voltage"];
   }
   if (doc.containsKey("send_interval_s")) {
     cfg.send_interval_s = doc["send_interval_s"];
-    if (cfg.send_interval_s < 1) cfg.send_interval_s = 1;
-    if (cfg.send_interval_s > 3600) cfg.send_interval_s = 3600;
+    if (cfg.send_interval_s < 1)
+      cfg.send_interval_s = 1;
+    if (cfg.send_interval_s > 3600)
+      cfg.send_interval_s = 3600;
   }
   if (doc.containsKey("alarm_interval_s")) {
     cfg.alarm_interval_s = doc["alarm_interval_s"];
-    if (cfg.alarm_interval_s < 5) cfg.alarm_interval_s = 5;
-    if (cfg.alarm_interval_s > 3600) cfg.alarm_interval_s = 3600;
+    if (cfg.alarm_interval_s < 5)
+      cfg.alarm_interval_s = 5;
+    if (cfg.alarm_interval_s > 3600)
+      cfg.alarm_interval_s = 3600;
   }
   if (doc.containsKey("v_max")) {
     cfg.v_max = doc["v_max"];
@@ -285,7 +290,8 @@ void MqttManager::handleTime(const String &msg) {
 
   if (msg.startsWith("{")) {
     DeserializationError err = deserializeJson(doc, msg);
-    if (err) return;
+    if (err)
+      return;
 
     unsigned long epoch = 0;
     if (doc.containsKey("epoch")) {
@@ -299,7 +305,8 @@ void MqttManager::handleTime(const String &msg) {
     }
   } else {
     struct tm ti;
-    if (sscanf(msg.c_str(), "%d:%d %d/%d/%d", &ti.tm_hour, &ti.tm_min, &ti.tm_mday, &ti.tm_mon, &ti.tm_year) == 5) {
+    if (sscanf(msg.c_str(), "%d:%d %d/%d/%d", &ti.tm_hour, &ti.tm_min,
+               &ti.tm_mday, &ti.tm_mon, &ti.tm_year) == 5) {
       ti.tm_mon -= 1;
       ti.tm_year -= 1900;
       ti.tm_sec = 0;
