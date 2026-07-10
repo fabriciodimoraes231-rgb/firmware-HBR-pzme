@@ -7,6 +7,15 @@ em barramento Modbus-RTU compartilhado, mais sensor de temperatura AHT10 (I2C).
 Publica dados individuais por fase via MQTT para um broker central.
 Possui modo de configuracao inicial (Captive Portal) via Access Point.
 
+## Documentacao relacionada
+
+| Documento | Conteudo |
+|-----------|----------|
+| `docs/HISTORICO_AJUSTES.md` | Changelog detalhado da reorganizacao do firmware em modulos `lib/` e das correcoes de robustez (reconexao Wi-Fi, delay bloqueante, bug de alarme novo/resolvido) |
+| `docs/ALARMES.md` | Referencia completa de cada tipo de alarme: condicao de disparo, casos especiais, cenarios de teste |
+| `docs/COMANDOS_MQTT.md` | Cookbook de comandos `mosquitto_pub/sub` para configurar e testar o dispositivo em campo |
+| `docs/diagramas.md` | Referencia de hardware (pinagem PZEM-004T, conexao com ESP32, LEDs indicadores) |
+
 ## Hardware
 
 | Componente | Especificacao |
@@ -16,7 +25,7 @@ Possui modo de configuracao inicial (Captive Portal) via Access Point.
 | Sensor Fase 2 | PZEM-004T V3.0 — Modbus 0x02 |
 | Sensor Fase 3 | PZEM-004T V3.0 — Modbus 0x03 |
 | Temperatura | AHT10 — I2C (SDA=21, SCL=22) |
-| Botao Config | GPIO0 (BOOT) — 3s boot = AP, 5s running = reset |
+| Botao Config | GPIO0 (BOOT) — 3s boot = AP, 5s running = reset (deteccao nao-bloqueante) |
 
 ## Conexoes
 
@@ -32,83 +41,110 @@ Possui modo de configuracao inicial (Captive Portal) via Access Point.
 - Framework: PlatformIO + Arduino
 - Board: esp32dev (espressif32)
 - Monitor: 115200 baud
+- Ambiente de teste: `native` (Unity, roda no host sem placa conectada — ver secao de Testes)
 
 ### Dependencias (platformio.ini)
 
 ```ini
+[env:esp32dev]
 lib_deps =
     mandulaj/PZEM-004T-v30
     knolleary/PubSubClient
     bblanchon/ArduinoJson
-    me-no-dev/ESP Async WebServer
+    me-no-dev/ESPAsyncWebServer
     me-no-dev/AsyncTCP
     adafruit/Adafruit AHTX0
 ```
 
+`build_flags` inclui `-Iinclude` — necessario porque o PlatformIO nao adiciona
+`include/` automaticamente ao path de compilacao de bibliotecas privadas em
+`lib/` (so o faz para `src/`).
+
+`[platformio] default_envs = esp32dev` garante que `pio run` sem `-e` so
+compila o firmware real — o ambiente `native` (usado só para testes) tentaria
+compilar `src/main.cpp`, que depende do Arduino/ESP32 e falharia.
+
 ## Estrutura de Arquivos
 
 ```
-pzem/
+firmware-HBR-pzme/
 ├── platformio.ini
+├── .clang-format                   # estilo LLVM
 ├── AGENTS.md
+├── docs/
+│   ├── HISTORICO_AJUSTES.md
+│   ├── ALARMES.md
+│   ├── COMANDOS_MQTT.md
+│   └── diagramas.md
 ├── src/
-│   ├── main.cpp               # Boot logic + dashboard
-│   ├── ConfigManager.h/.cpp   # Preferences (NVS) wrapper
-│   ├── CaptivePortal.h/.cpp   # AP 192.168.4.1 + form HTML
-│   ├── SensorManager.h/.cpp   # 3x PZEM + AHT10
-│   ├── AlarmManager.h/.cpp    # Threshold engine + transicoes
-│   ├── TimeManager.h/.cpp     # NTP + timestamp HH:MM DD/MM/YYYY
-│   └── MqttManager.h/.cpp     # PubSubClient wrapper (5 topicos)
+│   └── main.cpp                    # so orquestracao: setup()/loop()
+├── include/
+│   ├── app_config.h                # pinos, tempos, defaults, NTP, MQTT
+│   ├── config.h                    # struct Config (dado puro, sem hardware)
+│   └── phase_data.h                # struct PhaseData (dado puro, sem hardware)
+├── lib/
+│   ├── wifi_manager/                # conexao STA + reconexao nao-bloqueante
+│   ├── mqtt_manager/                # PubSubClient wrapper (5 topicos)
+│   ├── pzem_sensor/                 # leitura das 3 fases via Modbus
+│   ├── aht10_sensor/                # leitura de temperatura via I2C
+│   ├── alarm_manager/               # motor de limites + transicoes
+│   ├── config_manager/              # Preferences (NVS) wrapper
+│   ├── time_manager/                # NTP + timestamp HH:MM DD/MM/YYYY
+│   └── captive_portal/              # AP 192.168.4.1 + form HTML
+└── test/
+    └── test_alarm_manager/          # Unity, ambiente native (`pio test -e native`)
 ```
+
+Cada pasta de `lib/` e um modulo compilado isoladamente, expondo so o que
+esta no `.h` — equivalente ao `components/` do ESP-IDF. `PhaseData` e
+`Config` vivem em `include/` (nao dentro das libs de hardware) justamente
+para poderem ser usados por `alarm_manager` sem puxar `<Preferences.h>`/
+`<PZEM004Tv30.h>`, o que permite testar `alarm_manager` no ambiente `native`.
 
 ## Fluxo de Boot (main.cpp)
 
 ```
 setup()
-├─ Preferences.begin("pzem", false)
-├─ pinMode(GPIO0, INPUT_PULLUP)
-├─ incrementBootCount()
-├─ Se GPIO0 LOW >3s OU wifi_ssid vazio:
+├─ ConfigManager::load() + incrementBootCount()
+├─ pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP)
+├─ checkGpioBoot(): GPIO0 LOW >3s → shouldRebootAp = true
+├─ Se shouldRebootAp OU wifi_ssid vazio:
 │   └─ CaptivePortal::start()
-│       ├─ WiFi.softAP("ESP32_Config")
+│       ├─ WiFi.softAP(AP_SSID)          # sem senha (POC uso interno)
 │       ├─ AsyncWebServer(80)
 │       │   GET  /       → HTML (PROGMEM)
 │       │   POST /save   → salva Preferences + ESP.restart()
 │       │   POST /reset  → limpa Preferences + ESP.restart()
-│       └─ while(true) loop eterno
+│       └─ while(true) loop eterno (bloqueante, é o modo de configuracao)
 │
 └─ Se config OK:
-    ├─ WiFi.begin(wifi_ssid, wifi_pass)
-    ├─ configTime (NTP)
+    ├─ WifiManager::connect() — bloqueante so no boot, ate WIFI_CONNECT_MAX_ATTEMPTS
+    ├─ configTime (NTP, via TimeManager::init())
     ├─ MqttManager::connect()
     │   subscribe({prefix}/config)
     │   subscribe({prefix}/time)
     │   publish({prefix}/status, "online", QoS1, retain)
     │   set LWT: {prefix}/status = {"status":"offline"}
-    ├─ SensorManager::init()
-    │   Serial2.begin(9600, SERIAL_8N1, 16, 17)
-    │   Wire.begin(21, 22)
-    │   for i in 0..2 → new PZEM004Tv30(Serial2, 16, 17, PZEM_ADDR[i])
-    │   new Adafruit_AHTX0()
+    ├─ PzemSensor::init()   → Serial2.begin(9600, SERIAL_8N1, RX=16, TX=17)
+    ├─ Aht10Sensor::init()  → Wire.begin(SDA=21, SCL=22)
     └─ loop()
-        ├─ mqtt.loop() + reconnect
-        ├─ check GPIO0 → 5s hold → clear + restart AP
+        ├─ wifiManager.maintain()         → reconecta sozinho se cair (nao-bloqueante)
+        ├─ mqtt.loop() + reconnect (so tenta se Wi-Fi ja estiver conectado)
+        ├─ checkGpioRuntime(): GPIO0 LOW >5s → reset config + AP (nao-bloqueante)
         ├─ a cada send_interval_s:
-        │   for i in 0..num_phases-1:
-        │       v = pzems[i]->voltage() * v_factor[i]
-        │       a = pzems[i]->current() * a_factor[i]
-        │       w = pzems[i]->power() * w_factor[i]
-        │       kwh = pzems[i]->energy()
-        │       hz = pzems[i]->frequency()
-        │       pf = pzems[i]->pf()
-        │   publish({prefix}/data)
-        ├─ a cada send_interval_s:
-        │   publish({prefix}/data)
-        ├─ alarmes:
-        │   getNewAlarms() → publish({prefix}/alarm, "ALARM")
-        │   getResolvedAlarms() → publish({prefix}/alarm, "RESOLVED")
-        │   getActiveAlarms() → publish({prefix}/alarm, "ALARM_REFRESH")
+        │   pzemSensor.read(phases, ...) + aht10Sensor.getTemperature()
+        │   mqttManager.publishData({prefix}/data)
+        └─ (com MQTT conectado) alarmes:
+            alarmManager.check()
+            getNewAlarms()      → publish({prefix}/alarm, "ALARM")
+            getResolvedAlarms() → publish({prefix}/alarm, "RESOLVED")
+            a cada alarm_interval_s:
+            getActiveAlarms()   → publish({prefix}/alarm, "ALARM_REFRESH")
 ```
+
+Nenhuma etapa do `loop()` bloqueia por mais que o tempo de uma leitura de
+sensor — ver `docs/HISTORICO_AJUSTES.md` (secao 2.2) para o detalhe da
+correcao que eliminou o bloqueio do `checkGpioRuntime()`.
 
 ## Modelo de Configuracao (Preferences NVS)
 
@@ -128,264 +164,75 @@ Namespace: `pzem`
 | send_interval_s | uint16 | 5 | Intervalo envio (1-3600) |
 | alarm_interval_s | uint16 | 60 | Intervalo alarme (5-3600) |
 | v_max | float | 242.0 | Limite sobretensao |
-| v_min | float | 198.0 | Limite subtensao |
+| v_min | float | 198.0 | Limite subtensao (tambem liga/desliga PHASE_LOSS — ver docs/ALARMES.md) |
 | a_max | float | 100.0 | Limite sobrecorrente |
 | a_min | float | 0.5 | Limite subcorrente |
 | temp_max | float | 80.0 | Limite temperatura |
-| v_factor_0 | float | 1.0 | Correcao tensao Fase 1 |
-| v_factor_1 | float | 1.0 | Correcao tensao Fase 2 |
-| v_factor_2 | float | 1.0 | Correcao tensao Fase 3 |
-| a_factor_0 | float | 1.0 | Correcao corrente Fase 1 |
-| a_factor_1 | float | 1.0 | Correcao corrente Fase 2 |
-| a_factor_2 | float | 1.0 | Correcao corrente Fase 3 |
-| w_factor_0 | float | 1.0 | Correcao potencia Fase 1 |
-| w_factor_1 | float | 1.0 | Correcao potencia Fase 2 |
-| w_factor_2 | float | 1.0 | Correcao potencia Fase 3 |
+| v_factor_0..2 | float | 1.0 | Correcao tensao por fase |
+| a_factor_0..2 | float | 1.0 | Correcao corrente por fase |
+| w_factor_0..2 | float | 1.0 | Correcao potencia por fase |
+
+Estrutura definida em `include/config.h` (`struct Config`).
 
 ## Topicos MQTT
 
-Prefixo padrao: `vigiatech/setor/painel/CT`
-(Configuravel via `topic_prefix`)
-
-Os topicos sao montados como: `{prefixo}/sufixo`
-
-### 1. `{prefixo}/data` — PUBLICAR (dispositivo -> broker)
-
-Leituras eletricas trifasicas em tempo real.
-Intervalo: configuravel (`send_interval_s`, padrao 5s)
-QoS: 0 | Retain: nao
-
-```json
-{
-  "datetime": "09:28 23/06/2026",
-  "v_nominal": 220.0,
-  "F1": {
-    "v": 220.5,
-    "a": 10.25,
-    "w": 2250.0,
-    "kwh": 1234.56,
-    "hz": 60.0,
-    "pf": 0.95,
-    "valid": true
-  },
-  "F2": {
-    "v": 220.1,
-    "a": 11.2,
-    "w": 2400.0,
-    "kwh": 1500.0,
-    "hz": 60.0,
-    "pf": 0.93,
-    "valid": true
-  },
-  "F3": {
-    "v": 0.0,
-    "a": 0.0,
-    "w": 0.0,
-    "kwh": 0.0,
-    "hz": 0.0,
-    "pf": 0.0,
-    "valid": false
-  }
-}
-```
-
-### 2. `{prefixo}/config` — RECEBER (broker -> dispositivo)
-
-Receber configuracao remota via MQTT.
-QoS: 0 | Retain: nao
-
-Payload (todos os campos sao OPCIONAIS):
-
-```json
-{
-  "wifi_ssid": "MinhaRede",
-  "wifi_pass": "senha",
-  "mqtt_host": "broker.emqx.io",
-  "mqtt_port": 1883,
-  "mqtt_user": "usuario",
-  "mqtt_pass": "senha",
-  "mqtt_topic_prefix": "vigiatech/setor/painel/CT",
-  "nominal_voltage": 220.0,
-  "send_interval_s": 5,
-  "alarm_interval_s": 60,
-  "v_max": 242.0,
-  "v_min": 198.0,
-  "a_max": 100.0,
-  "a_min": 0.5,
-  "temp_max": 80.0,
-  "v_factor": [1.0, 1.0, 1.0],
-  "a_factor": [1.0, 1.0, 1.0],
-  "w_factor": [1.0, 1.0, 1.0]
-}
-```
-
-Resposta:
-```json
-{ "status": "ok", "message": "Config saved. Rebooting.", "timestamp": "09:28 23/06/2026" }
-```
-
-### 3. `{prefixo}/time` — RECEBER (broker -> dispositivo)
-
-Sincronizar data/hora do dispositivo.
-QoS: 0 | Retain: nao
-
-Formatos aceitos:
-
-Formato JSON:
-```json
-{ "epoch": 1750698000 }
-```
-ou
-```json
-{ "ts": 1750698000 }
-```
-
-Formato texto:
-```
-"09:28 23/06/2026"
-```
-
-### 4. `{prefixo}/alarm` — PUBLICAR (dispositivo -> broker)
-
-Notificar alarmes (disparo, resolucao e reenvio periodico).
-QoS: 0 | Retain: nao
-
-Tipos de alarme:
-- `OVERVOLTAGE` — sobretensao
-- `UNDERVOLTAGE` — subtensao
-- `OVERCURRENT` — sobrecorrente
-- `UNDERCURRENT` — subcorrente
-- `PHASE_LOSS` — perda de fase
-- `HIGH_TEMP` — temperatura alta
-
-#### 4a. Disparo (ALARM)
-
-```json
-{
-  "type": "ALARM",
-  "alarm": "PHASE_LOSS",
-  "phase": 2,
-  "value": 0.0,
-  "threshold": 1.0,
-  "datetime": "09:28 23/06/2026"
-}
-```
-
-#### 4b. Resolucao (RESOLVED)
-
-```json
-{
-  "type": "RESOLVED",
-  "alarm": "PHASE_LOSS",
-  "phase": 2,
-  "value": 127.5,
-  "threshold": 1.0,
-  "datetime": "09:35 23/06/2026"
-}
-```
-
-#### 4c. Reenvio periodico (ALARM_REFRESH)
-
-Reenvia alarmes ainda ativos a cada `alarm_interval_s` (padrao 60s).
-
-```json
-{
-  "type": "ALARM_REFRESH",
-  "alarm": "PHASE_LOSS",
-  "phase": 2,
-  "datetime": "09:30 23/06/2026"
-}
-```
-
-### 5. `{prefixo}/status` — PUBLICAR (dispositivo -> broker)
-
-Informar status de conexao do dispositivo.
-QoS: 1 | Retain: SIM | LWT: SIM
-
-#### Online (na conexao)
-
-```json
-{
-  "status": "online",
-  "ip": "192.168.1.100"
-}
-```
-
-#### Offline (LWT — desconexao inesperada)
-
-O broker publica automaticamente:
-```json
-{
-  "status": "offline"
-}
-```
-
-## Resumo Topicos
+Prefixo padrao: `vigiatech/setor/painel/CT` (configuravel via `topic_prefix`).
+Topicos montados como `{prefixo}/sufixo`. Payloads completos e exemplos de
+comando estao em `docs/COMANDOS_MQTT.md`.
 
 | Topico | Direcao | QoS | Retain | LWT |
 |--------|---------|-----|--------|-----|
-| /data | Dispositivo>Broker | 0 | nao | nao |
-| /config | Broker>Dispositivo | 0 | nao | nao |
-| /time | Broker>Dispositivo | 0 | nao | nao |
-| /alarm | Dispositivo>Broker | 0 | nao | nao |
-| /status | Dispositivo>Broker | 1 | sim | sim |
-
-## Modo de Configuracao (Captive Portal)
-
-- WiFi AP: ESP32_Config (senha: vazio)
-- IP fixo: 192.168.4.1
-- Porta: 80
-- Pagina: formulario HTML unico embutido em PROGMEM
-
-### Endpoints do WebServer
-
-| Metodo | Rota | Descricao |
-|--------|------|-----------|
-| GET | / | Formulario HTML |
-| POST | /save | Salva config + reboot |
-| POST | /reset | Limpa config + reboot |
-
-### Trigger
-
-- Boot: GPIO0 LOW por >3s → força AP
-- Boot: WiFi SSID vazio na NVS → força AP
-- Operacao: GPIO0 LOW por >5s → limpa config + reboot AP
-
-## Algoritmo de Calibração
-
-Cada leitura bruta do PZEM e multiplicada pelo fator de correcao por fase:
-
-```cpp
-float corrected = raw * correction_factor[phase];
-```
-
-O fator e default 1.0 (sem correcao). Deve ser ajustado comparando com um instrumento de referencia (ex: multimetro true RMS) e calculado como:
-
-```
-fator = leitura_referencia / leitura_pzem
-```
+| `/data` | Dispositivo→Broker | 0 | nao | nao |
+| `/config` | Broker→Dispositivo | 0 | nao | nao |
+| `/time` | Broker→Dispositivo | 0 | nao | nao |
+| `/alarm` | Dispositivo→Broker | 0 | nao | nao |
+| `/status` | Dispositivo→Broker | 1 | sim | sim |
 
 ## Tipos de Alarme
 
-| Alarme | Condicao | Campo usado |
-|--------|----------|-------------|
-| OVERVOLTAGE | v > v_max | v_max |
-| UNDERVOLTAGE | v < v_min | v_min |
-| OVERCURRENT | a > a_max | a_max |
-| UNDERCURRENT | a < a_min | a_min |
-| PHASE_LOSS | v = 0 ou isnan(v) | v_min |
-| HIGH_TEMP | temp > temp_max | temp_max |
+| Alarme | Condicao | Campo usado | Por fase? |
+|--------|----------|-------------|-----------|
+| OVERVOLTAGE | v > v_max | v_max | Sim |
+| UNDERVOLTAGE | v < v_min | v_min | Sim |
+| OVERCURRENT | a > a_max | a_max | Sim |
+| UNDERCURRENT | a > 0 && a < a_min | a_min | Sim |
+| PHASE_LOSS | !valid && v_min > 0 | v_min (liga/desliga) | Sim |
+| HIGH_TEMP | !isnan(temp) && temp > temp_max | temp_max | Nao (phase: 0) |
+
+Ver `docs/ALARMES.md` para condicoes completas, casos especiais (ex.: `a == 0`
+nao dispara UNDERCURRENT, `v_min == 0` desativa PHASE_LOSS) e o ciclo de vida
+`ALARM`/`RESOLVED`/`ALARM_REFRESH`.
 
 ## Regras de Implementacao
 
-- Nao adicionar comentarios no codigo
-- Seguir o padrao de nomes dos arquivos existentes (CamelCase, .h/.cpp)
-- Usar constexpr para constantes fixas
+- Nao adicionar comentarios no codigo (exceto para explicar o "porque" de algo
+  nao-obvio, nunca o "o que")
+- Pastas de `lib/` e nomes de arquivo em snake_case (`alarm_manager/alarm_manager.h`);
+  nomes de classe continuam em PascalCase (`AlarmManager`, `PzemSensor`)
+- Usar constexpr para constantes fixas, centralizadas em `include/app_config.h`
 - Preferir arrays C-style sobre std::vector em ambiente Arduino
 - Evitar alocacao dinamica (new/malloc) no loop()
+- Evitar `delay()` bloqueante dentro de `loop()` — usar maquina de estados com `millis()`
 - JSON com StaticJsonDocument (tamanho fixo em stack)
 - AHT10 lido apenas uma vez por ciclo (um unico sensor compartilhado)
-- Todo pzem.read*() retorna NaN em falha — tratar com isnan()
+- Todo pzem.read*() retorna NaN em falha — tratar com `std::isnan()`
+- Structs de dado puro (`Config`, `PhaseData`) ficam em `include/`, sem incluir
+  headers de hardware — permite testar logica de negocio (`alarm_manager`) no
+  ambiente `native`
+
+## Testes
+
+`alarm_manager` e testado nativamente (sem placa conectada), porque opera so
+sobre dados em memoria:
+
+```bash
+pio test -e native
+```
+
+13 casos cobrindo cada tipo de alarme e o ciclo `ALARM`/`RESOLVED`/`ALARM_REFRESH`
+em `test/test_alarm_manager/test_alarm_manager.cpp`. `config_manager` ainda nao
+tem testes automatizados — depende de `Preferences` (NVS do ESP32), precisaria
+de uma camada de abstracao antes de rodar nativamente.
 
 ## Guia de Deploy
 
@@ -396,7 +243,7 @@ fator = leitura_referencia / leitura_pzem
 | PlatformIO CLI | 6.1+ | Compilacao e flash |
 | esptool.py | 4.4+ | Flash manual (alternativo) |
 | Python | 3.8+ | Dependencia do esptool |
-| mosquitto-clients |qualquer | Teste MQTT (mosquitto_pub/sub) |
+| mosquitto-clients | qualquer | Teste MQTT (mosquitto_pub/sub) |
 
 ### Flash via PlatformIO
 
@@ -409,6 +256,9 @@ pio run --target upload
 
 # Monitor serial apos flash
 pio device monitor --baud 115200
+
+# Rodar testes automatizados (nao precisa de placa)
+pio test -e native
 ```
 
 ### Flash manual (esptool)
@@ -424,7 +274,8 @@ esptool.py --chip esp32 --port COM3 --baud 460800 write_flash -z 0x1000 .pio/bui
 ### Primeiros passos apos flash
 
 1. O ESP32 inicia em modo AP automaticamente (NVS vazia)
-2. Conecte-se ao WiFi `ESP32_Config` (sem senha)
+2. Conecte-se ao WiFi `ESP32_Config` (sem senha — POC de uso interno, ver
+   `docs/HISTORICO_AJUSTES.md` secao "Itens discutidos e adiados")
 3. Acesse `http://192.168.4.1` no navegador
 4. Preencha: WiFi SSID/senha, MQTT host/porta, numero de fases
 5. Clique em Salvar — o ESP32 reinicia e conecta ao WiFi
@@ -432,7 +283,8 @@ esptool.py --chip esp32 --port COM3 --baud 460800 write_flash -z 0x1000 .pio/bui
 
 ### Atualizacao OTA (futuro)
 
-Atualmente so e possivel atualizar via cabo USB. OTA (Over-The-Air) nao esta implementado.
+Atualmente so e possivel atualizar via cabo USB. OTA (Over-The-Air) nao esta
+implementado.
 
 ### Verificacao pos-deploy
 
@@ -474,31 +326,37 @@ mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{"send_inter
 | AP aparece mas 192.168.4.1 nao responde | Cliente conectou em modo ESTA | Desconectar e reconectar ao AP |
 | Config salva mas nao conecta | Senha WiFi incorreta | Resetar (GPIO0 5s) e reconfigurar |
 | IP diferente na rede | DHCP atribuiu outro IP | Verificar no Serial Monitor |
+| Wi-Fi caiu durante operacao | Router reiniciou/sinal fraco | Deve reconectar sozinho em ate ~5s apos o link voltar (ver `wifi_manager`) — se nao reconectar, checar `docs/HISTORICO_AJUSTES.md` |
 
 ### Sensor AHT10
 
-| Sintoma | Causa possivel | Sintoma |
+| Sintoma | Causa possivel | Solucao |
 |---------|---------------|---------|
 | `temperature: 25.0` sempre | AHT10 nao responde | Verificar wiring I2C (SDA=21, SCL=22) |
 | `humidity: 0.0` | Sensor com defeito | Substituir modulo AHT10 |
 | Leitura instavel | Cabo I2C muito longo | Manter < 20cm, usar pull-ups 4.7k |
+| Sensor falhou mas nenhum alarme dispara | Comportamento esperado — `NaN` nao gera `HIGH_TEMP` | Monitorar `temperature: null` no topico `/data` separadamente |
 
 ### Alarmes
 
 | Sintoma | Causa possivel | Solucao |
 |---------|---------------|---------|
-| `PHASE_LOSS` falso | `v_min` = 0 na config | Definir `v_min` > 0 para fases ativas |
+| `PHASE_LOSS` falso/nunca dispara | `v_min` = 0 na config | Definir `v_min` > 0 para fases ativas |
 | `UNDERCURRENT` falso | Fase desligada | `UNDERCURRENT` so dispara se `a > 0` |
-| Alarme nao dispara | `alarm_interval_s` muito alto | Diminuir intervalo (min: 5s) |
-| Alarme reenvia sempre | Alarme ativo nao resolvido | Verificar se condicao voltou ao normal |
+| Alarme nao dispara | `alarm_interval_s` muito alto | Diminuir intervalo (min: 5s) — isso so afeta o `ALARM_REFRESH`, nao o `ALARM`/`RESOLVED` |
+| So aparece `ALARM_REFRESH`, nunca `ALARM`/`RESOLVED` | Firmware rodando e anterior a correcao do bug de deteccao (ver `docs/HISTORICO_AJUSTES.md` 2.3) | Regravar com a versao atual |
+| Alarme oscilando rapido entre ALARM/RESOLVED | Condicao fisica instavel (fio solto, tensao no limite) | Comportamento esperado — investigar a instabilidade fisica |
+
+Detalhamento completo em `docs/ALARMES.md`.
 
 ### Erros de compilacao
 
 | Erro | Causa | Solucao |
 |------|-------|---------|
-| `StaticJsonDocument` deprecated | ArduinoJson v7+ | Atualizar para `JsonDocument` (ArduinoJson v7) |
+| `StaticJsonDocument` deprecated | ArduinoJson v7+ | Aviso conhecido, nao impede compilacao |
 | `#include` nao encontrado | Library nao instalada | `pio lib install` ou verificar platformio.ini |
 | `Serial2` nao declarado | Board nao suporta | Usar esp32dev com 2 UARTs |
+| `fatal error: Arduino.h` ao compilar `pio run` sem `-e` | Ambiente `native` tentando compilar `src/main.cpp` | Confirmar `default_envs = esp32dev` no `platformio.ini` |
 
 ## Metricas e Limites
 
@@ -507,7 +365,7 @@ mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{"send_inter
 | Recurso | Capacidade | Uso atual | Percentual |
 |---------|-----------|-----------|-----------|
 | RAM | 320 KB | ~48 KB | ~15% |
-| Flash | 1.3 MB | ~928 KB | ~71% |
+| Flash | 1.3 MB | ~931 KB | ~71% |
 
 ### Buffer MQTT
 
@@ -529,6 +387,7 @@ mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{"send_inter
 | Corrente medida | 0 A | 100 A | — |
 | Temperatura AHT10 | -40 C | +85 C | — |
 | Fator de correcao | 0.1 | 10.0 | 1.0 |
+| Alarmes por ciclo (`MAX_ALARMS`) | — | 12 | — |
 
 ### Limites do hardware
 
@@ -548,6 +407,7 @@ mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{"send_inter
 | Tempo de boot | ~3-5 segundos |
 | Tempo de conexao WiFi | ~2-10 segundos |
 | Tempo de conexao MQTT | ~1-3 segundos |
+| Tempo de reconexao Wi-Fi (se cair) | ate 5s para detectar + tentar de novo |
 | Intervalo de leitura PZEM | ~100 ms por fase |
 | Total leitura 3 fases | ~300 ms |
 | Dashboard refresh | 3 segundos (AJAX) |
@@ -570,6 +430,14 @@ mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{"send_inter
 | Client ID | Automatico | `esp32_<MAC>` (unico por dispositivo) |
 | LWT (Last Will) | Implementado | Publica `offline` no `/status` ao desconectar |
 
+### Captive Portal (AP de configuracao)
+
+O AP `ESP32_Config` sobe **sem senha** — decisao deliberada para esta fase de
+POC de uso interno (sem exposicao externa). Se o dispositivo for para
+instalacao em campo/ambiente nao controlado, revisitar essa decisao — opcoes
+discutidas: senha estatica compartilhada vs. senha por dispositivo derivada
+do MAC/eFuse. Ver `docs/HISTORICO_AJUSTES.md`.
+
 ### Melhorias de seguranca sugeridas
 
 1. **TLS com ESP-IDF**: Usar mbedTLS para conexao MQTT segura (requer refactor do PubSubClient)
@@ -577,6 +445,7 @@ mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{"send_inter
 3. **OTA com senha**: Proteger atualizacoes over-the-air com autenticacao
 4. **Watchdog de hardware**: Configurar WDT para reiniciar em caso de hang
 5. **Rate limiting**: Limitar conexoes simultaneas ao Captive Portal (max 1 client)
+6. **Senha no AP de configuracao**: ver secao acima
 
 ### Isolamento eletrico
 
