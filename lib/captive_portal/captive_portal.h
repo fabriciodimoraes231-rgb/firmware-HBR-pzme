@@ -1,8 +1,8 @@
 #pragma once
+#include "config_manager.h"
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
 #include <WiFi.h>
-#include "ConfigManager.h"
 
 class CaptivePortal {
 public:
