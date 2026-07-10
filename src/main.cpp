@@ -4,6 +4,7 @@
 #include "captive_portal.h"
 #include "config_manager.h"
 #include "mqtt_manager.h"
+#include "offline_buffer.h"
 #include "pzem_sensor.h"
 #include "time_manager.h"
 #include "web_dashboard.h"
@@ -19,6 +20,7 @@ TimeManager timeManager;
 MqttManager mqttManager;
 WifiManager wifiManager;
 WebDashboard webDashboard;
+OfflineBuffer offlineBuffer;
 
 Config config;
 PhaseData phases[MAX_PHASES];
@@ -74,6 +76,27 @@ void checkGpioRuntime() {
 void onConfigUpdated(const Config &cfg) { config = cfg; }
 
 void onTimeUpdated(unsigned long epoch) { timeManager.setFromEpoch(epoch); }
+
+// Drena o buffer offline em lotes pequenos por chamada, para nao estourar o
+// watchdog nem inundar o broker de uma vez ao reconectar.
+void flushOfflineBuffer() {
+  if (!mqttManager.isConnected())
+    return;
+
+  BufferedSample sample;
+  for (uint8_t i = 0; i < OFFLINE_FLUSH_BATCH && offlineBuffer.popSample(sample); i++) {
+    mqttManager.publishData(config, sample.phases, sample.temperature,
+                            sample.datetime);
+    mqttManager.loop();
+  }
+
+  BufferedAlarmEvent alarmEvt;
+  for (uint8_t i = 0; i < OFFLINE_FLUSH_BATCH && offlineBuffer.popAlarmEvent(alarmEvt); i++) {
+    mqttManager.publishAlarm(config, alarmEvt.event, alarmEvt.type,
+                             alarmEvt.datetime);
+    mqttManager.loop();
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -152,6 +175,8 @@ void loop() {
 
   checkGpioRuntime();
 
+  flushOfflineBuffer();
+
   if (now - lastRead >= config.send_interval_s * 1000) {
     lastRead = now;
     pzemSensor.read(phases, config.num_phases, config);
@@ -163,40 +188,53 @@ void loop() {
 
   if (now - lastSend >= config.send_interval_s * 1000) {
     lastSend = now;
+    String ts = timeManager.getTimestamp();
     if (mqttManager.isConnected()) {
-      String ts = timeManager.getTimestamp();
       mqttManager.publishData(config, phases, currentTemp, ts);
+    } else {
+      offlineBuffer.pushSample(phases, currentTemp, ts);
     }
   }
 
-  if (mqttManager.isConnected()) {
-    alarmManager.check(phases, config.num_phases, currentTemp, config,
-                       alarmState);
+  // Roda sempre, independente do MQTT: um alarme nao pode passar
+  // despercebido so porque a conexao caiu.
+  alarmManager.check(phases, config.num_phases, currentTemp, config,
+                     alarmState);
 
-    alarmManager.getNewAlarms(alarmState, newAlarms);
-    for (uint8_t i = 0; i < newAlarms.count; i++) {
-      if (newAlarms.active[i]) {
-        mqttManager.publishAlarm(config, newAlarms.events[i], "ALARM",
-                                 timeManager.getTimestamp());
+  alarmManager.getNewAlarms(alarmState, newAlarms);
+  for (uint8_t i = 0; i < newAlarms.count; i++) {
+    if (newAlarms.active[i]) {
+      String ts = timeManager.getTimestamp();
+      if (mqttManager.isConnected()) {
+        mqttManager.publishAlarm(config, newAlarms.events[i], "ALARM", ts);
+      } else {
+        offlineBuffer.pushAlarmEvent(newAlarms.events[i], "ALARM", ts);
       }
     }
+  }
 
-    alarmManager.getResolvedAlarms(alarmState, resolvedAlarms);
-    for (uint8_t i = 0; i < resolvedAlarms.count; i++) {
-      if (resolvedAlarms.active[i]) {
+  alarmManager.getResolvedAlarms(alarmState, resolvedAlarms);
+  for (uint8_t i = 0; i < resolvedAlarms.count; i++) {
+    if (resolvedAlarms.active[i]) {
+      String ts = timeManager.getTimestamp();
+      if (mqttManager.isConnected()) {
         mqttManager.publishAlarm(config, resolvedAlarms.events[i], "RESOLVED",
-                                 timeManager.getTimestamp());
+                                 ts);
+      } else {
+        offlineBuffer.pushAlarmEvent(resolvedAlarms.events[i], "RESOLVED",
+                                     ts);
       }
     }
+  }
 
-    if (now - lastAlarmSend >= config.alarm_interval_s * 1000) {
-      lastAlarmSend = now;
-      alarmManager.getActiveAlarms(alarmState, activeAlarms);
-      for (uint8_t i = 0; i < activeAlarms.count; i++) {
-        if (activeAlarms.active[i]) {
-          mqttManager.publishAlarm(config, activeAlarms.events[i],
-                                   "ALARM_REFRESH", timeManager.getTimestamp());
-        }
+  if (mqttManager.isConnected() &&
+      now - lastAlarmSend >= config.alarm_interval_s * 1000) {
+    lastAlarmSend = now;
+    alarmManager.getActiveAlarms(alarmState, activeAlarms);
+    for (uint8_t i = 0; i < activeAlarms.count; i++) {
+      if (activeAlarms.active[i]) {
+        mqttManager.publishAlarm(config, activeAlarms.events[i],
+                                 "ALARM_REFRESH", timeManager.getTimestamp());
       }
     }
   }
