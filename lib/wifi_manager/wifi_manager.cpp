@@ -24,3 +24,20 @@ bool WifiManager::connect(const char *ssid, const char *pass) {
   Serial.println(" FAIL - reiniciando em AP mode");
   return false;
 }
+
+bool WifiManager::isConnected() { return WiFi.status() == WL_CONNECTED; }
+
+void WifiManager::maintain(const char *ssid, const char *pass) {
+  if (isConnected()) {
+    return;
+  }
+
+  unsigned long now = millis();
+  if (now - m_lastReconnectAttempt < WIFI_RECONNECT_RETRY_MS) {
+    return;
+  }
+  m_lastReconnectAttempt = now;
+
+  Serial.println("WiFi desconectado - tentando reconectar...");
+  WiFi.begin(ssid, pass);
+}

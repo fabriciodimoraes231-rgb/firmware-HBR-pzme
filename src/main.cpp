@@ -511,9 +511,12 @@ void loop() {
 
   unsigned long now = millis();
 
+  wifiManager.maintain(config.wifi_ssid, config.wifi_pass);
+  digitalWrite(LED_PIN, wifiManager.isConnected() ? HIGH : LOW);
+
   mqttManager.loop();
 
-  if (!mqttManager.isConnected()) {
+  if (wifiManager.isConnected() && !mqttManager.isConnected()) {
     if (now - lastMqttTry >= MQTT_RETRY_MS) {
       lastMqttTry = now;
       mqttManager.connect(config);
