@@ -39,6 +39,7 @@ public:
 
 private:
   AlarmState m_previous;
+  AlarmState m_lastComputed;
   void resetState(AlarmState &state);
   void setAlarm(AlarmState &state, uint8_t idx, AlarmType type, uint8_t phase,
                 float value, float threshold);

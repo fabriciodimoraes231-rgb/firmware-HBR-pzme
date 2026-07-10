@@ -1,7 +1,10 @@
 #include "alarm_manager.h"
 #include <cmath>
 
-AlarmManager::AlarmManager() { resetState(m_previous); }
+AlarmManager::AlarmManager() {
+  resetState(m_previous);
+  resetState(m_lastComputed);
+}
 
 void AlarmManager::resetState(AlarmState &state) {
   state.count = 0;
@@ -45,6 +48,12 @@ const char *AlarmManager::alarmName(AlarmType type) {
 void AlarmManager::check(const PhaseData *phases, uint8_t numPhases,
                          float temperature, const Config &cfg,
                          AlarmState &state) {
+  // m_previous precisa refletir o resultado do ciclo ANTERIOR no momento em
+  // que getNewAlarms()/getResolvedAlarms() forem chamados logo em seguida -
+  // por isso e capturado a partir de m_lastComputed (nao de `state`, que e
+  // apenas o parametro de saida) antes de recalcularmos o ciclo atual.
+  m_previous = m_lastComputed;
+
   resetState(state);
   uint8_t idx = 0;
 
@@ -80,7 +89,7 @@ void AlarmManager::check(const PhaseData *phases, uint8_t numPhases,
     setAlarm(state, idx++, ALARM_HIGH_TEMP, 0, temperature, cfg.temp_max);
   }
 
-  m_previous = state;
+  m_lastComputed = state;
 }
 
 bool alarmMatch(const AlarmEvent &a, const AlarmEvent &b) {
