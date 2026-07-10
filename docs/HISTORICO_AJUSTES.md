@@ -261,13 +261,33 @@ Roda em menos de 1 segundo, sem placa conectada.
 
 ---
 
-## Parte 4 — Itens discutidos e adiados (não implementados)
+## Parte 4 — `web_dashboard`: extração dos handlers HTTP do `main.cpp`
+
+Depois da rodada inicial, `main.cpp` ainda tinha ~190 linhas de lógica que
+não era orquestração: o HTML/JS do dashboard embutido em PROGMEM, e os
+handlers das rotas `/`, `/api/data`, `/api/config` e `/api/mqtt-config`
+(montagem de JSON, parsing/validação de configuração recebida via HTTP).
+
+Isso foi movido para `lib/web_dashboard/`, uma classe `WebDashboard` que
+recebe referências para os módulos que precisa (`ConfigManager`,
+`AlarmManager`, `TimeManager`, `MqttManager`) e para o estado compartilhado
+(`Config`, `PhaseData*`, `AlarmState`) através de um método `begin()` — em
+vez de acessar tudo como variável global, como fazia antes dentro de
+`main.cpp`.
+
+`main.cpp` caiu de 577 para 203 linhas e agora é só orquestração: construir
+os módulos, sequência de boot, `setup()`/`loop()`. Nenhum campo JSON, rota
+HTTP ou HTML mudou — validado com diff linha a linha contra os handlers
+originais (ignorando espaço/formatação) e com a suíte de testes nativa.
+
+---
+
+## Parte 5 — Itens discutidos e adiados (não implementados)
 
 | Item | Status | Motivo |
 |------|--------|--------|
 | Senha no AP do captive portal (`ESP32_Config`) | Adiado | POC de uso interno; sem exposição externa por enquanto. Retomar se for para campo/instalação em ambiente não controlado. |
-| Driver AHT10 duplicado (entre este firmware e o firmware irmão em ESP-IDF) | Pendente | Ainda não esclarecido — falta entender exatamente qual é a duplicação mencionada. |
-| Extrair handlers HTTP (`/api/data`, `/api/config`, `/api/mqtt-config`) do `main.cpp` para um módulo próprio | Não solicitado | Não estava na árvore de módulos alvo original; `main.cpp` ainda tem ~200 linhas de lógica de dashboard/API, o que tecnicamente contraria a regra "só orquestração", mas foi conscientemente deixado de fora do escopo desta rodada. |
+| Driver AHT10 duplicado (entre este firmware e o firmware irmão em ESP-IDF) | Resolvido | Esclarecido: cada firmware usa uma abordagem diferente (driver próprio no ESP-IDF vs. lib pronta `Adafruit_AHTX0` aqui). Decisão: manter como está. |
 | Testes automatizados para `config_manager` | Não feito | Depende de `Preferences` (NVS do ESP32); precisaria de uma camada de abstração/mock antes de poder rodar nativamente. |
 
 ---
@@ -295,7 +315,8 @@ pio device monitor --baud 115200
 | Antes de qualquer mudança (baseline) | 47.920 bytes (14,6%) | 930.301 bytes (71,0%) |
 | Depois de toda a reorganização estrutural | 47.920 bytes (14,6%) | 930.781 bytes (71,0%) |
 | Depois das correções de robustez (Wi-Fi, GPIO, bug do alarme) | 48.088 bytes (14,7%) | 931.025 bytes (71,0%) |
+| Depois da extração do `web_dashboard` | 48.104 bytes (14,7%) | 930.617 bytes (71,0%) |
 
-A variação de Flash/RAM entre as duas últimas linhas é inteiramente explicada
-pelas correções de comportamento (novas variáveis de estado) — não pela
-reorganização de arquivos, que por si só não altera o binário gerado.
+A variação de Flash/RAM entre essas linhas é inteiramente explicada pelas
+mudanças de comportamento e reorganização de código de cada etapa — nenhuma
+delas alterou nomes de tópicos MQTT, campos JSON ou o HTML do dashboard.

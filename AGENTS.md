@@ -90,7 +90,8 @@ firmware-HBR-pzme/
 │   ├── alarm_manager/               # motor de limites + transicoes
 │   ├── config_manager/              # Preferences (NVS) wrapper
 │   ├── time_manager/                # NTP + timestamp HH:MM DD/MM/YYYY
-│   └── captive_portal/              # AP 192.168.4.1 + form HTML
+│   ├── captive_portal/              # AP 192.168.4.1 + form HTML
+│   └── web_dashboard/               # dashboard HTML/JS + rotas HTTP (/, /api/*)
 └── test/
     └── test_alarm_manager/          # Unity, ambiente native (`pio test -e native`)
 ```
@@ -125,6 +126,12 @@ setup()
     │   subscribe({prefix}/time)
     │   publish({prefix}/status, "online", QoS1, retain)
     │   set LWT: {prefix}/status = {"status":"offline"}
+    ├─ WebDashboard::begin()
+    │   AsyncWebServer(80)
+    │   GET  /                → dashboard HTML/JS (PROGMEM)
+    │   GET  /api/data        → JSON com leituras/limites/alarmes
+    │   POST /api/config      → salva Preferences + ESP.restart()
+    │   POST /api/mqtt-config → publica config via MQTT
     ├─ PzemSensor::init()   → Serial2.begin(9600, SERIAL_8N1, RX=16, TX=17)
     ├─ Aht10Sensor::init()  → Wire.begin(SDA=21, SCL=22)
     └─ loop()
