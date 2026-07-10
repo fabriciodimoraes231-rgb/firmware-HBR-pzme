@@ -1,14 +1,16 @@
-#include "TimeManager.h"
+#include "time_manager.h"
+#include "app_config.h"
 
 TimeManager::TimeManager() : m_timeSet(false) {}
 
 void TimeManager::init() {
-  configTime(-3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  configTime(NTP_GMT_OFFSET_SEC, NTP_DST_OFFSET_SEC, NTP_SERVER_1,
+             NTP_SERVER_2);
   Serial.print("NTP sync");
   time_t now = time(nullptr);
   int attempts = 0;
-  while (now < 100000 && attempts < 20) {
-    delay(500);
+  while (now < 100000 && attempts < NTP_SYNC_MAX_ATTEMPTS) {
+    delay(NTP_SYNC_RETRY_DELAY_MS);
     now = time(nullptr);
     attempts++;
     Serial.print(".");
@@ -57,18 +59,16 @@ String TimeManager::getTimestamp() {
     return "00:00 01/01/1970";
   }
   char buf[32];
-  snprintf(buf, sizeof(buf), "%02d:%02d %02d/%02d/%04d",
-           ti->tm_hour, ti->tm_min,
-           ti->tm_mday, ti->tm_mon + 1, ti->tm_year + 1900);
+  snprintf(buf, sizeof(buf), "%02d:%02d %02d/%02d/%04d", ti->tm_hour,
+           ti->tm_min, ti->tm_mday, ti->tm_mon + 1, ti->tm_year + 1900);
   return String(buf);
 }
 
-unsigned long TimeManager::getUptimeS() {
-  return millis() / 1000;
-}
+unsigned long TimeManager::getUptimeS() { return millis() / 1000; }
 
 bool TimeManager::isTimeValid() {
-  if (!m_timeSet) return false;
+  if (!m_timeSet)
+    return false;
   time_t now = time(nullptr);
   return now >= 100000;
 }

@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
-#include <time.h>
 #include <sys/time.h>
+#include <time.h>
 
 class TimeManager {
 public:
