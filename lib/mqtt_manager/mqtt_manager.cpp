@@ -7,7 +7,7 @@ MqttManager *MqttManager::m_instance = nullptr;
 
 MqttManager::MqttManager()
     : m_mqtt(m_wifiClient), m_configured(false), m_configCb(nullptr),
-      m_timeCb(nullptr) {
+      m_timeCb(nullptr), m_ackCb(nullptr) {
   m_instance = this;
 }
 
@@ -30,8 +30,10 @@ bool MqttManager::connect(const Config &cfg) {
 
     String cfgTopic = buildTopic(cfg, "config");
     String timeTopic = buildTopic(cfg, "time");
+    String ackTopic = buildTopic(cfg, "alarm/ack");
     m_mqtt.subscribe(cfgTopic.c_str());
     m_mqtt.subscribe(timeTopic.c_str());
+    m_mqtt.subscribe(ackTopic.c_str());
 
     publishStatus(cfg, true);
     return true;
@@ -54,6 +56,11 @@ void MqttManager::setConfigCallback(void (*cb)(const Config &)) {
 }
 
 void MqttManager::setTimeCallback(void (*cb)(unsigned long)) { m_timeCb = cb; }
+
+void MqttManager::setAlarmAckCallback(void (*cb)(bool all, AlarmType type,
+                                                  uint8_t phase)) {
+  m_ackCb = cb;
+}
 
 String MqttManager::buildTopic(const Config &cfg, const char *suffix) {
   String t = cfg.topic_prefix;
@@ -109,12 +116,14 @@ void MqttManager::publishData(const Config &cfg, const PhaseData *phases,
 }
 
 void MqttManager::publishAlarm(const Config &cfg, const AlarmEvent &event,
-                               const char *type, const String &datetime) {
+                               const char *type, const String &datetime,
+                               bool conditionActive) {
   StaticJsonDocument<256> doc;
   doc["type"] = type;
   doc["alarm"] = AlarmManager::alarmName(event.type);
   doc["phase"] = event.phase;
   doc["datetime"] = datetime;
+  doc["condition_active"] = conditionActive;
 
   if (event.type != ALARM_PHASE_LOSS) {
     doc["value"] = event.value;
@@ -164,7 +173,9 @@ void MqttManager::callback(char *topic, byte *payload, unsigned int len) {
   }
 
   String t = String(topic);
-  if (t.endsWith("/config")) {
+  if (t.endsWith("/alarm/ack")) {
+    m_instance->handleAlarmAck(msg);
+  } else if (t.endsWith("/config")) {
     m_instance->handleConfig(msg);
   } else if (t.endsWith("/time")) {
     m_instance->handleTime(msg);
@@ -314,6 +325,31 @@ void MqttManager::handleTime(const String &msg) {
       m_timeCb(mktime(&ti));
     }
   }
+}
+
+void MqttManager::handleAlarmAck(const String &msg) {
+  if (!m_ackCb)
+    return;
+
+  StaticJsonDocument<128> doc;
+  DeserializationError err = deserializeJson(doc, msg);
+  if (err)
+    return;
+
+  if (doc["all"] | false) {
+    m_ackCb(true, ALARM_OVERVOLTAGE, 0);
+    return;
+  }
+
+  if (!doc.containsKey("alarm"))
+    return;
+
+  AlarmType type;
+  if (!AlarmManager::alarmTypeFromName(doc["alarm"], type))
+    return;
+
+  uint8_t phase = doc["phase"] | 0;
+  m_ackCb(false, type, phase);
 }
 
 #pragma GCC diagnostic pop

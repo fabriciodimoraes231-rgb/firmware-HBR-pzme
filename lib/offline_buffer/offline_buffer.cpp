@@ -33,11 +33,13 @@ bool OfflineBuffer::hasSamples() const { return m_sampleCount > 0; }
 size_t OfflineBuffer::sampleCount() const { return m_sampleCount; }
 
 void OfflineBuffer::pushAlarmEvent(const AlarmEvent &event, const char *type,
-                                   const String &datetime) {
+                                   const String &datetime,
+                                   bool conditionActive) {
   BufferedAlarmEvent &slot = m_alarmEvents[m_alarmHead];
   strlcpy(slot.datetime, datetime.c_str(), sizeof(slot.datetime));
   strlcpy(slot.type, type, sizeof(slot.type));
   slot.event = event;
+  slot.conditionActive = conditionActive;
 
   m_alarmHead = (m_alarmHead + 1) % OFFLINE_BUFFER_ALARM_EVENTS;
   if (m_alarmCount == OFFLINE_BUFFER_ALARM_EVENTS) {

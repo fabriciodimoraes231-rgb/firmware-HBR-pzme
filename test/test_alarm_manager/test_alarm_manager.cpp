@@ -158,6 +158,22 @@ void test_alarm_name_strings(void) {
                            AlarmManager::alarmName(ALARM_HIGH_TEMP));
 }
 
+void test_alarm_type_from_name_roundtrip(void) {
+  AlarmType roundtrip[] = {ALARM_OVERVOLTAGE,  ALARM_UNDERVOLTAGE,
+                           ALARM_OVERCURRENT,  ALARM_UNDERCURRENT,
+                           ALARM_PHASE_LOSS,   ALARM_HIGH_TEMP};
+
+  for (AlarmType t : roundtrip) {
+    AlarmType parsed;
+    TEST_ASSERT_TRUE(AlarmManager::alarmTypeFromName(AlarmManager::alarmName(t),
+                                                      parsed));
+    TEST_ASSERT_EQUAL(t, parsed);
+  }
+
+  AlarmType unused;
+  TEST_ASSERT_FALSE(AlarmManager::alarmTypeFromName("NOT_A_TYPE", unused));
+}
+
 void test_get_new_alarms_reports_newly_triggered(void) {
   AlarmManager alarm;
   Config cfg = makeConfig();
@@ -165,47 +181,143 @@ void test_get_new_alarms_reports_newly_triggered(void) {
 
   PhaseData okPhase[1] = {makeValidPhase(220.0f, 10.0f)};
   alarm.check(okPhase, 1, 25.0f, cfg, state);
-  alarm.getNewAlarms(state, newAlarms);
+  alarm.getNewAlarms(newAlarms);
   TEST_ASSERT_EQUAL_UINT8(0, newAlarms.count);
 
   PhaseData badPhase[1] = {makeValidPhase(250.0f, 10.0f)};
   alarm.check(badPhase, 1, 25.0f, cfg, state);
-  alarm.getNewAlarms(state, newAlarms);
+  alarm.getNewAlarms(newAlarms);
 
   TEST_ASSERT_EQUAL_UINT8(1, newAlarms.count);
   TEST_ASSERT_TRUE(newAlarms.active[0]);
+  TEST_ASSERT_TRUE(newAlarms.physicallyActive[0]);
   TEST_ASSERT_EQUAL(ALARM_OVERVOLTAGE, newAlarms.events[0].type);
 }
 
-void test_get_resolved_alarms_reports_cleared(void) {
+void test_new_alarm_not_reported_twice_while_still_open(void) {
   AlarmManager alarm;
   Config cfg = makeConfig();
-  AlarmState state, resolved;
+  AlarmState state, newAlarms;
+
+  PhaseData badPhase[1] = {makeValidPhase(250.0f, 10.0f)};
+  alarm.check(badPhase, 1, 25.0f, cfg, state);
+  alarm.getNewAlarms(newAlarms);
+  TEST_ASSERT_EQUAL_UINT8(1, newAlarms.count);
+
+  // Continua fora do limite no ciclo seguinte: nao deve gerar ALARM de novo,
+  // ja esta aberto.
+  alarm.check(badPhase, 1, 25.0f, cfg, state);
+  alarm.getNewAlarms(newAlarms);
+  TEST_ASSERT_EQUAL_UINT8(0, newAlarms.count);
+}
+
+void test_condition_clearing_does_not_auto_resolve(void) {
+  // Mudanca de comportamento: a leitura voltar ao normal NAO gera RESOLVED
+  // sozinha. O alarme continua "aberto" (aparece no refresh) ate um ack
+  // explicito via resolve()/resolveAll().
+  AlarmManager alarm;
+  Config cfg = makeConfig();
+  AlarmState state, refresh;
 
   PhaseData badPhase[1] = {makeValidPhase(250.0f, 10.0f)};
   alarm.check(badPhase, 1, 25.0f, cfg, state);
 
   PhaseData okPhase[1] = {makeValidPhase(220.0f, 10.0f)};
   alarm.check(okPhase, 1, 25.0f, cfg, state);
-  alarm.getResolvedAlarms(state, resolved);
 
-  TEST_ASSERT_EQUAL_UINT8(1, resolved.count);
-  TEST_ASSERT_TRUE(resolved.active[0]);
-  TEST_ASSERT_EQUAL(ALARM_OVERVOLTAGE, resolved.events[0].type);
+  alarm.getRefreshAlarms(refresh);
+  TEST_ASSERT_EQUAL_UINT8(1, refresh.count);
+  TEST_ASSERT_TRUE(refresh.active[0]);
+  TEST_ASSERT_FALSE(refresh.physicallyActive[0]);
+  TEST_ASSERT_EQUAL(ALARM_OVERVOLTAGE, refresh.events[0].type);
 }
 
-void test_get_active_alarms_reports_current_state(void) {
+void test_get_refresh_alarms_reports_open_regardless_of_physical_state(void) {
   AlarmManager alarm;
   Config cfg = makeConfig();
-  AlarmState state, active;
+  AlarmState state, refresh;
 
   PhaseData badPhase[1] = {makeValidPhase(250.0f, 10.0f)};
   alarm.check(badPhase, 1, 25.0f, cfg, state);
-  alarm.getActiveAlarms(state, active);
+  alarm.getRefreshAlarms(refresh);
 
-  TEST_ASSERT_EQUAL_UINT8(1, active.count);
-  TEST_ASSERT_TRUE(active.active[0]);
-  TEST_ASSERT_EQUAL(ALARM_OVERVOLTAGE, active.events[0].type);
+  TEST_ASSERT_EQUAL_UINT8(1, refresh.count);
+  TEST_ASSERT_TRUE(refresh.active[0]);
+  TEST_ASSERT_TRUE(refresh.physicallyActive[0]);
+  TEST_ASSERT_EQUAL(ALARM_OVERVOLTAGE, refresh.events[0].type);
+}
+
+void test_resolve_closes_matching_open_alarm(void) {
+  AlarmManager alarm;
+  Config cfg = makeConfig();
+  AlarmState state, resolved, refresh;
+
+  PhaseData badPhase[1] = {makeValidPhase(250.0f, 10.0f)};
+  alarm.check(badPhase, 1, 25.0f, cfg, state);
+
+  bool found = alarm.resolve(ALARM_OVERVOLTAGE, 1, resolved);
+  TEST_ASSERT_TRUE(found);
+  TEST_ASSERT_EQUAL_UINT8(1, resolved.count);
+  TEST_ASSERT_EQUAL(ALARM_OVERVOLTAGE, resolved.events[0].type);
+
+  alarm.getRefreshAlarms(refresh);
+  TEST_ASSERT_EQUAL_UINT8(0, refresh.count);
+}
+
+void test_resolve_returns_false_when_no_matching_alarm(void) {
+  AlarmManager alarm;
+  AlarmState resolved;
+
+  bool found = alarm.resolve(ALARM_OVERVOLTAGE, 1, resolved);
+  TEST_ASSERT_FALSE(found);
+}
+
+void test_resolve_all_closes_every_open_alarm(void) {
+  AlarmManager alarm;
+  Config cfg = makeConfig();
+  AlarmState state, resolved, refresh;
+
+  PhaseData badPhases[2] = {makeValidPhase(250.0f, 10.0f),
+                            makeValidPhase(150.0f, 10.0f)};
+  alarm.check(badPhases, 2, 25.0f, cfg, state);
+  alarm.getRefreshAlarms(refresh);
+  TEST_ASSERT_EQUAL_UINT8(2, refresh.count);
+
+  alarm.resolveAll(resolved);
+  TEST_ASSERT_EQUAL_UINT8(2, resolved.count);
+
+  alarm.getRefreshAlarms(refresh);
+  TEST_ASSERT_EQUAL_UINT8(0, refresh.count);
+}
+
+void test_open_alarm_registry_handles_worst_case_capacity(void) {
+  // Pior caso real: 5 tipos por fase (overvoltage/undervoltage/overcurrent/
+  // undercurrent/phase_loss) x 3 fases + high_temp = 16 combinacoes
+  // distintas, todas abertas ao mesmo tempo sem nenhum ack.
+  AlarmManager alarm;
+  Config cfg = makeConfig();
+  AlarmState state, refresh;
+
+  // Ciclo 1: overvoltage + overcurrent em todas as fases (2 x 3 = 6 abertos).
+  PhaseData overPhases[3] = {makeValidPhase(250.0f, 150.0f),
+                             makeValidPhase(250.0f, 150.0f),
+                             makeValidPhase(250.0f, 150.0f)};
+  alarm.check(overPhases, 3, 95.0f, cfg, state);
+
+  // Ciclo 2: undervoltage + undercurrent em todas as fases (mais 2 x 3 = 6).
+  PhaseData underPhases[3] = {makeValidPhase(150.0f, 0.1f),
+                              makeValidPhase(150.0f, 0.1f),
+                              makeValidPhase(150.0f, 0.1f)};
+  alarm.check(underPhases, 3, 95.0f, cfg, state);
+
+  // Ciclo 3: phase_loss em todas as fases (mais 3) + high_temp (mais 1) = 16.
+  PhaseData lostPhases[3];
+  lostPhases[0].valid = lostPhases[1].valid = lostPhases[2].valid = false;
+  alarm.check(lostPhases, 3, 95.0f, cfg, state);
+
+  alarm.getRefreshAlarms(refresh);
+  TEST_ASSERT_EQUAL_UINT8(MAX_ALARMS, refresh.count);
+  TEST_ASSERT_EQUAL_UINT8(16, MAX_ALARMS);
 }
 
 int main(int argc, char **argv) {
@@ -220,8 +332,14 @@ int main(int argc, char **argv) {
   RUN_TEST(test_high_temperature_triggers_alarm);
   RUN_TEST(test_nan_temperature_does_not_trigger_alarm);
   RUN_TEST(test_alarm_name_strings);
+  RUN_TEST(test_alarm_type_from_name_roundtrip);
   RUN_TEST(test_get_new_alarms_reports_newly_triggered);
-  RUN_TEST(test_get_resolved_alarms_reports_cleared);
-  RUN_TEST(test_get_active_alarms_reports_current_state);
+  RUN_TEST(test_new_alarm_not_reported_twice_while_still_open);
+  RUN_TEST(test_condition_clearing_does_not_auto_resolve);
+  RUN_TEST(test_get_refresh_alarms_reports_open_regardless_of_physical_state);
+  RUN_TEST(test_resolve_closes_matching_open_alarm);
+  RUN_TEST(test_resolve_returns_false_when_no_matching_alarm);
+  RUN_TEST(test_resolve_all_closes_every_open_alarm);
+  RUN_TEST(test_open_alarm_registry_handles_worst_case_capacity);
   return UNITY_END();
 }

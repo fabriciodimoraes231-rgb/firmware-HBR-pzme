@@ -17,11 +17,14 @@ public:
   void publishData(const Config &cfg, const PhaseData *phases,
                    float temperature, const String &datetime);
   void publishAlarm(const Config &cfg, const AlarmEvent &event,
-                    const char *type, const String &datetime);
+                    const char *type, const String &datetime,
+                    bool conditionActive);
   void publishStatus(const Config &cfg, bool online);
   void publishConfig(const Config &cfg, const char *payload);
   void setConfigCallback(void (*cb)(const Config &));
   void setTimeCallback(void (*cb)(unsigned long));
+  void setAlarmAckCallback(void (*cb)(bool all, AlarmType type,
+                                      uint8_t phase));
 
 private:
   WiFiClient m_wifiClient;
@@ -30,11 +33,13 @@ private:
   bool m_configured;
   void (*m_configCb)(const Config &);
   void (*m_timeCb)(unsigned long);
+  void (*m_ackCb)(bool all, AlarmType type, uint8_t phase);
 
   static void callback(char *topic, byte *payload, unsigned int len);
   static MqttManager *m_instance;
 
   void handleConfig(const String &msg);
   void handleTime(const String &msg);
+  void handleAlarmAck(const String &msg);
   String buildTopic(const Config &cfg, const char *suffix);
 };

@@ -26,8 +26,7 @@ Config config;
 PhaseData phases[MAX_PHASES];
 AlarmState alarmState;
 AlarmState newAlarms;
-AlarmState resolvedAlarms;
-AlarmState activeAlarms;
+AlarmState refreshAlarms;
 
 unsigned long lastRead = 0;
 unsigned long lastSend = 0;
@@ -93,8 +92,39 @@ void flushOfflineBuffer() {
   BufferedAlarmEvent alarmEvt;
   for (uint8_t i = 0; i < OFFLINE_FLUSH_BATCH && offlineBuffer.popAlarmEvent(alarmEvt); i++) {
     mqttManager.publishAlarm(config, alarmEvt.event, alarmEvt.type,
-                             alarmEvt.datetime);
+                             alarmEvt.datetime, alarmEvt.conditionActive);
     mqttManager.loop();
+  }
+}
+
+void onAlarmAck(bool all, AlarmType type, uint8_t phase) {
+  String ts = timeManager.getTimestamp();
+
+  if (all) {
+    AlarmState resolved;
+    alarmManager.resolveAll(resolved);
+    for (uint8_t i = 0; i < resolved.count; i++) {
+      if (mqttManager.isConnected()) {
+        mqttManager.publishAlarm(config, resolved.events[i], "RESOLVED", ts,
+                                 resolved.physicallyActive[i]);
+      } else {
+        offlineBuffer.pushAlarmEvent(resolved.events[i], "RESOLVED", ts,
+                                     resolved.physicallyActive[i]);
+      }
+    }
+    return;
+  }
+
+  AlarmState resolved;
+  if (!alarmManager.resolve(type, phase, resolved))
+    return;
+
+  if (mqttManager.isConnected()) {
+    mqttManager.publishAlarm(config, resolved.events[0], "RESOLVED", ts,
+                             resolved.physicallyActive[0]);
+  } else {
+    offlineBuffer.pushAlarmEvent(resolved.events[0], "RESOLVED", ts,
+                                 resolved.physicallyActive[0]);
   }
 }
 
@@ -151,6 +181,7 @@ void setup() {
 
   mqttManager.setConfigCallback(onConfigUpdated);
   mqttManager.setTimeCallback(onTimeUpdated);
+  mqttManager.setAlarmAckCallback(onAlarmAck);
   mqttManager.connect(config);
   pzemSensor.init();
   aht10Sensor.init();
@@ -201,28 +232,16 @@ void loop() {
   alarmManager.check(phases, config.num_phases, currentTemp, config,
                      alarmState);
 
-  alarmManager.getNewAlarms(alarmState, newAlarms);
+  alarmManager.getNewAlarms(newAlarms);
   for (uint8_t i = 0; i < newAlarms.count; i++) {
     if (newAlarms.active[i]) {
       String ts = timeManager.getTimestamp();
       if (mqttManager.isConnected()) {
-        mqttManager.publishAlarm(config, newAlarms.events[i], "ALARM", ts);
+        mqttManager.publishAlarm(config, newAlarms.events[i], "ALARM", ts,
+                                 newAlarms.physicallyActive[i]);
       } else {
-        offlineBuffer.pushAlarmEvent(newAlarms.events[i], "ALARM", ts);
-      }
-    }
-  }
-
-  alarmManager.getResolvedAlarms(alarmState, resolvedAlarms);
-  for (uint8_t i = 0; i < resolvedAlarms.count; i++) {
-    if (resolvedAlarms.active[i]) {
-      String ts = timeManager.getTimestamp();
-      if (mqttManager.isConnected()) {
-        mqttManager.publishAlarm(config, resolvedAlarms.events[i], "RESOLVED",
-                                 ts);
-      } else {
-        offlineBuffer.pushAlarmEvent(resolvedAlarms.events[i], "RESOLVED",
-                                     ts);
+        offlineBuffer.pushAlarmEvent(newAlarms.events[i], "ALARM", ts,
+                                     newAlarms.physicallyActive[i]);
       }
     }
   }
@@ -230,11 +249,12 @@ void loop() {
   if (mqttManager.isConnected() &&
       now - lastAlarmSend >= config.alarm_interval_s * 1000) {
     lastAlarmSend = now;
-    alarmManager.getActiveAlarms(alarmState, activeAlarms);
-    for (uint8_t i = 0; i < activeAlarms.count; i++) {
-      if (activeAlarms.active[i]) {
-        mqttManager.publishAlarm(config, activeAlarms.events[i],
-                                 "ALARM_REFRESH", timeManager.getTimestamp());
+    alarmManager.getRefreshAlarms(refreshAlarms);
+    for (uint8_t i = 0; i < refreshAlarms.count; i++) {
+      if (refreshAlarms.active[i]) {
+        mqttManager.publishAlarm(config, refreshAlarms.events[i],
+                                 "ALARM_REFRESH", timeManager.getTimestamp(),
+                                 refreshAlarms.physicallyActive[i]);
       }
     }
   }

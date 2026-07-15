@@ -21,6 +21,7 @@ struct BufferedAlarmEvent {
   char datetime[OFFLINE_DATETIME_LEN];
   char type[12]; // "ALARM" ou "RESOLVED"
   AlarmEvent event;
+  bool conditionActive;
 };
 
 // Fila circular em RAM para segurar leituras/alarmes enquanto o MQTT esta
@@ -35,7 +36,7 @@ public:
   size_t sampleCount() const;
 
   void pushAlarmEvent(const AlarmEvent &event, const char *type,
-                      const String &datetime);
+                      const String &datetime, bool conditionActive);
   bool popAlarmEvent(BufferedAlarmEvent &out);
   bool hasAlarmEvents() const;
   size_t alarmEventCount() const;

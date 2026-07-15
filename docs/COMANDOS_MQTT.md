@@ -134,7 +134,7 @@ vigiatech/setor/painel/CT/data
 vigiatech/setor/painel/CT/alarm
 ```
 
-Tipos: `ALARM`, `RESOLVED`, `ALARM_REFRESH`
+Tipos: `ALARM`, `ALARM_REFRESH`, `RESOLVED`
 
 ```json
 {
@@ -143,9 +143,48 @@ Tipos: `ALARM`, `RESOLVED`, `ALARM_REFRESH`
   "phase": 1,
   "value": 245.0,
   "threshold": 242.0,
-  "datetime": "09:28 23/06/2026"
+  "datetime": "09:28 23/06/2026",
+  "condition_active": true
 }
 ```
+
+`condition_active` indica se a condicao fisica ainda esta fora do limite
+neste momento. `RESOLVED` **so** e publicado apos um ack (ver secao 8.1) -
+a condicao voltar ao normal sozinha nao fecha o alarme, so muda
+`condition_active` para `false` nos proximos `ALARM_REFRESH`. Detalhes do
+ciclo de vida completo em `docs/ALARMES.md`.
+
+---
+
+## 8.1. Topico de ack de alarme (Backend/Frontend -> ESP)
+
+```
+vigiatech/setor/painel/CT/alarm/ack
+```
+
+Fecha um alarme aberto (por tipo + fase):
+
+```bash
+mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/alarm/ack" -m '{
+  "alarm": "OVERVOLTAGE",
+  "phase": 1
+}'
+```
+
+`phase` pode ser omitido para `HIGH_TEMP` (que nao e por fase, `phase: 0`).
+
+Fecha todos os alarmes abertos de uma vez:
+
+```bash
+mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/alarm/ack" -m '{
+  "all": true
+}'
+```
+
+O ESP responde publicando `"RESOLVED"` no topico `.../alarm` para cada
+alarme fechado, imediatamente apos processar o ack. Payload invalido ou
+`alarm` com nome desconhecido e ignorado silenciosamente (mesmo padrao do
+topico `/config`).
 
 ---
 

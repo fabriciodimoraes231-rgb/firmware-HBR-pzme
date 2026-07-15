@@ -17,12 +17,16 @@ A cada ciclo do `loop()` (com o dispositivo conectado ao MQTT), o firmware:
 
 1. Lê os sensores (PZEM de cada fase + AHT10).
 2. Chama `AlarmManager::check()`, que avalia cada condição de alarme contra os
-   limites configurados (`Config`) e monta o estado atual (`AlarmState`).
-3. Compara esse estado atual contra o estado do ciclo anterior, publicando:
-   - **`"ALARM"`** — quando uma condição que **não** estava ativa passa a estar.
-   - **`"RESOLVED"`** — quando uma condição que estava ativa deixa de estar.
+   limites configurados (`Config`) e reconcilia contra o **registro de
+   alarmes abertos** (persistente, não zera a cada ciclo), publicando:
+   - **`"ALARM"`** — quando uma condição fisicamente ativa não corresponde a
+     nenhum alarme já aberto (tipo+fase) — abre um novo.
    - **`"ALARM_REFRESH"`** — reenvio periódico (a cada `alarm_interval_s`,
-     default 60s) de tudo que **continua** ativo, mesmo sem mudança.
+     default 60s) de **todo alarme aberto**, esteja a condição fisicamente
+     ativa ou não naquele momento.
+   - **`"RESOLVED"`** — **só** quando chega uma confirmação externa (ack) no
+     tópico `{prefixo}/alarm/ack` (ver seção "Ciclo de vida" abaixo). A
+     condição voltar ao normal, sozinha, **não** gera `RESOLVED`.
 
 Cada mensagem vai para o tópico `{prefixo}/alarm`, no formato:
 
@@ -33,12 +37,16 @@ Cada mensagem vai para o tópico `{prefixo}/alarm`, no formato:
   "phase": 1,
   "value": 250.0,
   "threshold": 242.0,
-  "datetime": "18:47 09/07/2026"
+  "datetime": "18:47 09/07/2026",
+  "condition_active": true
 }
 ```
 
 (campos `value`/`threshold` são omitidos para `PHASE_LOSS`, que não tem um
-valor numérico associado).
+valor numérico associado). `condition_active` indica se a condição física
+segue fora do limite **neste exato momento** — pode ser `false` num
+`ALARM_REFRESH` (ou até num `RESOLVED`) se o alarme já normalizou fisicamente
+mas ainda não recebeu ack, ou já foi ackado enquanto ainda ativo.
 
 ---
 
@@ -65,7 +73,9 @@ esperado — risco de dano a equipamentos sensíveis, isolamento, etc.
 **Cenário de teste:** baixe `v_max` via `/api/config` ou MQTT config para um
 valor abaixo da tensão real da rede (ex.: rede em 220V, configure
 `v_max: 200`). Deve aparecer `"ALARM"` quase instantaneamente. Suba o valor de
-volta para acima da tensão real → deve aparecer `"RESOLVED"`.
+volta para acima da tensão real — o `ALARM_REFRESH` seguinte deve vir com
+`"condition_active": false`, mas **não** sai `"RESOLVED"` sozinho; publique um
+ack em `{prefixo}/alarm/ack` para fechar (ver seção "Ciclo de vida").
 
 ---
 
@@ -87,7 +97,8 @@ configure `v_min = 0` só para "desativar" o alarme de subtensão — isso tem o
 efeito colateral de desativar `PHASE_LOSS` também.
 
 **Cenário de teste:** suba `v_min` acima da tensão real da rede. Deve disparar
-`"ALARM"` quase na hora. Baixe de volta → `"RESOLVED"`.
+`"ALARM"` quase na hora. Baixe de volta — condição normaliza (refresh vira
+`condition_active: false`), mas só fecha com `"RESOLVED"` após o ack.
 
 ---
 
@@ -107,7 +118,7 @@ já conectada (ex.: uma lâmpada).
 
 **Cenário de teste:** com alguma carga ligada na fase monitorada, baixe
 `a_max` para abaixo da corrente atual. `"ALARM"` deve aparecer. Suba de volta
-→ `"RESOLVED"`.
+— a condição some, mas o alarme só fecha (`"RESOLVED"`) com o ack.
 
 ---
 
@@ -131,8 +142,9 @@ para detectar uma carga que está *quase* desligada, mas não totalmente
 
 **Cenário de teste:** com uma carga pequena ligada (corrente baixa, mas não
 zero), configure `a_min` acima dessa corrente. Deve disparar `"ALARM"`.
-Desligue a carga completamente (`a` vai a zero) — o alarme deve ser
-**resolvido** (porque `a > 0` deixa de ser verdade), não permanecer ativo.
+Desligue a carga completamente (`a` vai a zero, `a > 0` deixa de ser
+verdade) — a condição física some (refresh vira `condition_active: false`),
+mas o alarme continua **aberto** até o ack; não espere `"RESOLVED"` sozinho.
 
 ---
 
@@ -166,7 +178,8 @@ ser monitorada — o que pode ser surpreendente se não for intencional.
 **Cenário de teste:** confirme primeiro que `v_min > 0` na configuração atual
 (veja `/api/data` → `limits.v_min`, ou o log de boot no Serial Monitor).
 Desconecte fisicamente o cabo de uma fase do PZEM (ou o CT dela) — `"ALARM"`
-de `PHASE_LOSS` deve aparecer. Reconecte — `"RESOLVED"`.
+de `PHASE_LOSS` deve aparecer. Reconecte — a condição normaliza, mas o
+`"RESOLVED"` só sai depois do ack.
 
 ---
 
@@ -195,7 +208,7 @@ tópico `/data` por muito tempo).
 de calor, secador em distância segura) até a leitura passar de `temp_max`, ou
 simplesmente baixe `temp_max` via config para abaixo da temperatura ambiente
 atual. `"ALARM"` deve aparecer. Afaste a fonte de calor / suba `temp_max` de
-volta → `"RESOLVED"`.
+volta — a condição normaliza, mas o `"RESOLVED"` só sai depois do ack.
 
 ---
 
@@ -212,36 +225,69 @@ volta → `"RESOLVED"`.
 
 ---
 
-## Ciclo de vida: `ALARM` / `RESOLVED` / `ALARM_REFRESH`
+## Ciclo de vida: `ALARM` / `ALARM_REFRESH` / `RESOLVED`
 
 | Tipo | Quando dispara | Frequência |
 |------|-----------------|-----------|
-| `ALARM` | No exato ciclo em que a condição passa de inativa para ativa | Uma vez, no momento da transição |
-| `RESOLVED` | No exato ciclo em que a condição passa de ativa para inativa | Uma vez, no momento da transição |
-| `ALARM_REFRESH` | A cada `alarm_interval_s` (default 60s), para tudo que **continua** ativo | Periódico, enquanto a condição não for resolvida |
+| `ALARM` | A condição física fica fora do limite e não havia alarme aberto igual (mesmo tipo+fase) | Uma vez, ao abrir |
+| `ALARM_REFRESH` | A cada `alarm_interval_s` (default 60s), para **todo alarme aberto** | Periódico, enquanto o alarme não for ackado — mesmo que a condição já tenha normalizado |
+| `RESOLVED` | Só quando chega um ack válido no tópico `{prefixo}/alarm/ack` | Uma vez, no momento do ack |
 
-**Nota histórica:** até a correção documentada em `HISTORICO_AJUSTES.md`
-(seção 2.3), `ALARM` e `RESOLVED` nunca disparavam de fato devido a um bug na
-comparação de estados — só o `ALARM_REFRESH` funcionava. Isso já foi
-corrigido e validado (13 testes automatizados + confirmação em bancada com
-hardware real). Se ao testar você só ver `ALARM_REFRESH` e nunca `ALARM`/
-`RESOLVED`, é sinal de que a versão rodando na placa é anterior à correção —
-regrave o firmware.
+**A condição física voltar ao normal, sozinha, não fecha o alarme.** O
+firmware mantém um registro interno de alarmes "abertos" (tipo+fase); a
+condição normalizar apenas marca `condition_active: false` nos próximos
+`ALARM_REFRESH` — o alarme continua aberto e sendo reenviado até alguém
+confirmar a resolução via ack. Isso é intencional: evita que um alarme seja
+dado como resolvido só porque a leitura oscilou de volta pro range, sem
+ninguém ter de fato tratado a causa.
+
+**Publicando um ack:**
+
+```bash
+# Fecha um alarme especifico (tipo + fase; phase omitido = 0, usado por HIGH_TEMP)
+mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/alarm/ack" \
+  -m '{"alarm": "OVERVOLTAGE", "phase": 1}'
+
+# Fecha todos os alarmes abertos de uma vez
+mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/alarm/ack" \
+  -m '{"all": true}'
+```
+
+Payload inválido ou `alarm` com nome desconhecido é ignorado silenciosamente
+(mesmo padrão do tópico `/config`). Ver `docs/COMANDOS_MQTT.md` para mais
+exemplos.
 
 **Sobre oscilação:** se uma condição física estiver instável (ex.: fio com
-mau contato, tensão oscilando bem em cima do limite configurado), é esperado
-ver `ALARM`/`RESOLVED` alternando repetidamente em pouco tempo — isso é o
-sistema funcionando corretamente, refletindo uma condição real instável, não
-um bug do firmware.
+mau contato, tensão oscilando bem em cima do limite configurado), o alarme
+não vai abrir/fechar repetidamente sozinho como antes — ele abre uma vez e
+fica aberto (só alternando `condition_active` no refresh) até alguém dar o
+ack. Isso é o comportamento correto do modelo atual, não um bug.
+
+**Nota histórica:** antes desta mudança, o firmware gerava `RESOLVED`
+automaticamente quando a condição normalizava — e por um tempo isso nem
+funcionava de verdade, por um bug de comparação de estados corrigido e
+descrito em `HISTORICO_AJUSTES.md` (seção 2.3). O modelo atual substitui esse
+`RESOLVED` automático por um ack explícito; veja a entrada correspondente em
+`HISTORICO_AJUSTES.md` para o contexto completo da mudança.
 
 ---
 
-## Limite de capacidade (nota técnica, baixo risco na prática)
+## Limite de capacidade
 
-`AlarmState` guarda no máximo `MAX_ALARMS = 12` eventos por ciclo. Com 3 fases
-e até 2 alarmes simultâneos por fase na prática (tensão OU corrente
-raramente disparam ambos ao mesmo tempo de forma anômala, mas é fisicamente
-possível: overvoltage + overcurrent juntos), mais 1 de temperatura, o uso
-real fica bem abaixo do limite. Se ele for atingido, alarmes além do 12º são
-silenciosamente descartados naquele ciclo (sem erro ou log) — cenário
-extremamente improvável em operação normal, mas vale saber que existe.
+`AlarmState` guarda no máximo `MAX_ALARMS = 16` alarmes abertos
+simultaneamente — o teto real de combinações distintas (tipo, fase) que o
+sistema pode gerar: 5 tipos por fase (`OVERVOLTAGE`/`UNDERVOLTAGE`/
+`OVERCURRENT`/`UNDERCURRENT`/`PHASE_LOSS`) × 3 fases + `HIGH_TEMP` = 16.
+
+Diferente de antes, esse limite deixou de ser "baixo risco na prática": como
+os alarmes não se auto-resolvem mais, eles se acumulam no registro enquanto
+não forem ackados, e em teoria **todas** as 16 combinações podem estar
+abertas ao mesmo tempo se ninguém der ack por tempo suficiente. `MAX_ALARMS`
+foi dimensionado exatamente para esse pior caso (validado em
+`test_open_alarm_registry_handles_worst_case_capacity`), então não há
+descarte silencioso de alarmes novos mesmo nesse cenário — mas isso também
+significa que **dar ack regularmente deixou de ser só "boa prática de UX"** e
+passou a ser necessário para o sistema continuar registrando eventos com
+consistência (ex.: se todos os 16 estiverem abertos, tecnicamente não haveria
+mais slot pra um 17º tipo — que não existe no modelo atual, mas seria o caso
+a observar se novos tipos de alarme forem adicionados no futuro).

@@ -292,6 +292,59 @@ originais (ignorando espaço/formatação) e com a suíte de testes nativa.
 
 ---
 
+## Parte 6 — Ack manual de alarmes via MQTT (mudança de comportamento, não bugfix)
+
+### Motivação
+
+Até aqui, `RESOLVED` era publicado automaticamente sempre que uma condição
+física voltava a ficar dentro dos limites configurados (ver seção 2.3 acima,
+que corrigiu o bug que impedia isso de acontecer de verdade). Na prática,
+isso significa que "resolvido" = "o valor normalizou por conta própria" —
+sem nenhuma confirmação de que alguém de fato tratou a causa do alarme.
+
+Decisão: separar "condição física normalizou" de "alarme foi tratado/
+reconhecido". `RESOLVED` deixa de ser automático e passa a depender de um ack
+explícito publicado por quem estiver do outro lado (Node-RED, backend,
+frontend) no tópico `{prefixo}/alarm/ack`. Isso é o padrão comum em sistemas
+de alarme industrial (condição limpar ≠ alarme fechado).
+
+### O que mudou
+
+- **`AlarmManager`** deixou de recalcular tudo do zero a cada ciclo
+  (`m_previous`/`m_lastComputed`) e passou a manter um **registro
+  persistente de alarmes abertos** (`m_open`), que só perde entradas via
+  `resolve()`/`resolveAll()` (chamados a partir de um ack recebido).
+  `MAX_ALARMS` subiu de 12 para **16** — o teto real de combinações
+  (tipo, fase) que podem ficar simultaneamente abertas, já que alarmes não
+  se auto-limpam mais.
+- **Novo tópico** `{prefixo}/alarm/ack` (ESP assina, junto de `config` e
+  `time`). Payload `{"alarm": "OVERVOLTAGE", "phase": 1}` fecha um alarme
+  específico; `{"all": true}` fecha todos os abertos.
+- **`ALARM_REFRESH`** continua sendo reenviado periodicamente para todo
+  alarme aberto, mesmo depois de a condição física ter normalizado — para
+  não deixar um alarme pendente passar despercebido. O payload de
+  `ALARM`/`ALARM_REFRESH`/`RESOLVED` ganhou o campo `"condition_active"`
+  (bool) para o consumidor distinguir urgência real de pendência
+  administrativa.
+- Testes reescritos em `test/test_alarm_manager/test_alarm_manager.cpp`
+  (19 casos), incluindo um caso de capacidade no pior caso real (16
+  combinações abertas simultaneamente sem nenhum ack).
+
+### Impacto para quem consome o MQTT
+
+**Isto é uma mudança de contrato, não um bugfix.** Depois de atualizar o
+firmware, `RESOLVED` só vai aparecer se o backend/Node-RED/frontend
+publicarem o ack em `{prefixo}/alarm/ack` — sem isso, alarmes ficam
+abertos (recebendo `ALARM_REFRESH`) indefinidamente. Ver
+`docs/COMANDOS_MQTT.md` (seção 8.1) e `docs/ALARMES.md` ("Ciclo de vida")
+para os detalhes e exemplos de payload.
+
+**Arquivos:** `lib/alarm_manager/alarm_manager.{h,cpp}`,
+`lib/mqtt_manager/mqtt_manager.{h,cpp}`, `lib/offline_buffer/offline_buffer.{h,cpp}`,
+`src/main.cpp`, `test/test_alarm_manager/test_alarm_manager.cpp`.
+
+---
+
 ## Referência rápida — build e teste
 
 ```bash
@@ -316,6 +369,13 @@ pio device monitor --baud 115200
 | Depois de toda a reorganização estrutural | 47.920 bytes (14,6%) | 930.781 bytes (71,0%) |
 | Depois das correções de robustez (Wi-Fi, GPIO, bug do alarme) | 48.088 bytes (14,7%) | 931.025 bytes (71,0%) |
 | Depois da extração do `web_dashboard` | 48.104 bytes (14,7%) | 930.617 bytes (71,0%) |
+| Atual (offline_buffer + ack manual de alarmes) | 92.952 bytes (28,4%) | 933.629 bytes (71,2%) |
+
+O salto de RAM na última linha é quase todo do `offline_buffer` (commit
+`aa5df66`, anterior a esta tabela ser atualizada): os arrays estáticos
+`m_samples[360]`/`m_alarmEvents[30]` reservam essa memória de uma vez, não é
+efeito do ack de alarmes. O ack em si (`MAX_ALARMS` 12→16 + campo
+`physicallyActive`) soma poucas centenas de bytes.
 
 A variação de Flash/RAM entre essas linhas é inteiramente explicada pelas
 mudanças de comportamento e reorganização de código de cada etapa — nenhuma
