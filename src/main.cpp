@@ -34,6 +34,7 @@ unsigned long lastAlarmSend = 0;
 unsigned long lastMqttTry = 0;
 
 bool shouldRebootAp = false;
+bool hasReadOnce = false;
 float currentTemp = NAN;
 
 void checkGpioBoot() {
@@ -215,6 +216,7 @@ void loop() {
     for (uint8_t i = 0; i < config.num_phases; i++) {
       phases[i].temperature = currentTemp;
     }
+    hasReadOnce = true;
   }
 
   if (now - lastSend >= config.send_interval_s * 1000) {
@@ -227,34 +229,40 @@ void loop() {
     }
   }
 
-  // Roda sempre, independente do MQTT: um alarme nao pode passar
-  // despercebido so porque a conexao caiu.
-  alarmManager.check(phases, config.num_phases, currentTemp, config,
-                     alarmState);
+  // Roda sempre que ja houve pelo menos uma leitura real, independente do
+  // MQTT (um alarme nao pode passar despercebido so porque a conexao caiu).
+  // Antes da primeira leitura, phases[] ainda esta com valid=false por
+  // default (nao por falha de sensor), o que abriria um PHASE_LOSS fantasma
+  // a cada boot - e, como alarme aberto agora so fecha via ack, esse
+  // fantasma nunca mais sumiria sozinho.
+  if (hasReadOnce) {
+    alarmManager.check(phases, config.num_phases, currentTemp, config,
+                       alarmState);
 
-  alarmManager.getNewAlarms(newAlarms);
-  for (uint8_t i = 0; i < newAlarms.count; i++) {
-    if (newAlarms.active[i]) {
-      String ts = timeManager.getTimestamp();
-      if (mqttManager.isConnected()) {
-        mqttManager.publishAlarm(config, newAlarms.events[i], "ALARM", ts,
-                                 newAlarms.physicallyActive[i]);
-      } else {
-        offlineBuffer.pushAlarmEvent(newAlarms.events[i], "ALARM", ts,
-                                     newAlarms.physicallyActive[i]);
+    alarmManager.getNewAlarms(newAlarms);
+    for (uint8_t i = 0; i < newAlarms.count; i++) {
+      if (newAlarms.active[i]) {
+        String ts = timeManager.getTimestamp();
+        if (mqttManager.isConnected()) {
+          mqttManager.publishAlarm(config, newAlarms.events[i], "ALARM", ts,
+                                   newAlarms.physicallyActive[i]);
+        } else {
+          offlineBuffer.pushAlarmEvent(newAlarms.events[i], "ALARM", ts,
+                                       newAlarms.physicallyActive[i]);
+        }
       }
     }
-  }
 
-  if (mqttManager.isConnected() &&
-      now - lastAlarmSend >= config.alarm_interval_s * 1000) {
-    lastAlarmSend = now;
-    alarmManager.getRefreshAlarms(refreshAlarms);
-    for (uint8_t i = 0; i < refreshAlarms.count; i++) {
-      if (refreshAlarms.active[i]) {
-        mqttManager.publishAlarm(config, refreshAlarms.events[i],
-                                 "ALARM_REFRESH", timeManager.getTimestamp(),
-                                 refreshAlarms.physicallyActive[i]);
+    if (mqttManager.isConnected() &&
+        now - lastAlarmSend >= config.alarm_interval_s * 1000) {
+      lastAlarmSend = now;
+      alarmManager.getRefreshAlarms(refreshAlarms);
+      for (uint8_t i = 0; i < refreshAlarms.count; i++) {
+        if (refreshAlarms.active[i]) {
+          mqttManager.publishAlarm(config, refreshAlarms.events[i],
+                                   "ALARM_REFRESH", timeManager.getTimestamp(),
+                                   refreshAlarms.physicallyActive[i]);
+        }
       }
     }
   }
