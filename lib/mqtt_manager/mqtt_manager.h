@@ -11,7 +11,7 @@
 class MqttManager {
 public:
   MqttManager();
-  bool connect(const Config &cfg);
+  bool connect(const Config &cfg, const String &datetime);
   void loop();
   bool isConnected();
   void publishData(const Config &cfg, const PhaseData *phases,
@@ -19,7 +19,7 @@ public:
   void publishAlarm(const Config &cfg, const AlarmEvent &event,
                     const char *type, const String &datetime,
                     bool conditionActive);
-  void publishStatus(const Config &cfg, bool online);
+  void publishStatus(const Config &cfg, bool online, const String &datetime);
   void publishConfig(const Config &cfg, const char *payload);
   void setConfigCallback(void (*cb)(const Config &));
   void setTimeCallback(void (*cb)(unsigned long));

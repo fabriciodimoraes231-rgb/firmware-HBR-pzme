@@ -195,7 +195,7 @@ void setup() {
   mqttManager.setTimeCallback(onTimeUpdated);
   mqttManager.setAlarmAckCallback(onAlarmAck);
   mqttManager.setPreRestartCallback(onConfigRestartPending);
-  mqttManager.connect(config);
+  mqttManager.connect(config, timeManager.getTimestamp());
   pzemSensor.init();
   aht10Sensor.init();
 }
@@ -213,7 +213,7 @@ void loop() {
   if (wifiManager.isConnected() && !mqttManager.isConnected()) {
     if (now - lastMqttTry >= MQTT_RETRY_MS) {
       lastMqttTry = now;
-      mqttManager.connect(config);
+      mqttManager.connect(config, timeManager.getTimestamp());
     }
   }
 

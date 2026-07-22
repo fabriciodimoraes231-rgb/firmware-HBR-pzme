@@ -11,7 +11,7 @@ MqttManager::MqttManager()
   m_instance = this;
 }
 
-bool MqttManager::connect(const Config &cfg) {
+bool MqttManager::connect(const Config &cfg, const String &datetime) {
   m_lastCfg = cfg;
   m_mqtt.setServer(cfg.mqtt_host, cfg.mqtt_port);
   m_mqtt.setCallback(callback);
@@ -35,7 +35,7 @@ bool MqttManager::connect(const Config &cfg) {
     m_mqtt.subscribe(timeTopic.c_str());
     m_mqtt.subscribe(ackTopic.c_str());
 
-    publishStatus(cfg, true);
+    publishStatus(cfg, true, datetime);
     return true;
   } else {
     Serial.printf("falhou (rc=%d)\n", m_mqtt.state());
@@ -144,9 +144,11 @@ void MqttManager::publishConfig(const Config &cfg, const char *payload) {
   Serial.printf("MQTT publicado em %s\n", topic.c_str());
 }
 
-void MqttManager::publishStatus(const Config &cfg, bool online) {
+void MqttManager::publishStatus(const Config &cfg, bool online,
+                                const String &datetime) {
   StaticJsonDocument<512> doc;
   doc["status"] = online ? "online" : "offline";
+  doc["datetime"] = datetime;
   if (online) {
     doc["ip"] = WiFi.localIP().toString();
   }

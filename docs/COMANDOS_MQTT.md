@@ -196,8 +196,12 @@ vigiatech/setor/painel/CT/status
 
 Online:
 ```json
-{ "status": "online", "ip": "192.168.1.100" }
+{ "status": "online", "datetime": "09:21 22/07/2026", "ip": "192.168.1.100" }
 ```
+
+`datetime` reflete o momento da conexao/reconexao ao broker (nao e
+atualizado periodicamente) - util para distinguir um status recente de um
+retido antigo, já que o topico é publicado com `retain=true`.
 
 Offline (LWT automatico):
 ```json
