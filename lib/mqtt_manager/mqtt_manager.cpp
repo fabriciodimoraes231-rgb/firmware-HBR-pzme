@@ -7,7 +7,7 @@ MqttManager *MqttManager::m_instance = nullptr;
 
 MqttManager::MqttManager()
     : m_mqtt(m_wifiClient), m_configured(false), m_configCb(nullptr),
-      m_timeCb(nullptr), m_ackCb(nullptr) {
+      m_timeCb(nullptr), m_ackCb(nullptr), m_preRestartCb(nullptr) {
   m_instance = this;
 }
 
@@ -61,6 +61,8 @@ void MqttManager::setAlarmAckCallback(void (*cb)(bool all, AlarmType type,
                                                   uint8_t phase)) {
   m_ackCb = cb;
 }
+
+void MqttManager::setPreRestartCallback(void (*cb)()) { m_preRestartCb = cb; }
 
 String MqttManager::buildTopic(const Config &cfg, const char *suffix) {
   String t = cfg.topic_prefix;
@@ -291,6 +293,10 @@ void MqttManager::handleConfig(const String &msg) {
   char buf[192];
   size_t n = serializeJson(resp, buf);
   m_mqtt.publish(topic.c_str(), buf, n);
+
+  if (m_preRestartCb) {
+    m_preRestartCb();
+  }
 
   delay(500);
   ESP.restart();

@@ -25,6 +25,11 @@ public:
   void setTimeCallback(void (*cb)(unsigned long));
   void setAlarmAckCallback(void (*cb)(bool all, AlarmType type,
                                       uint8_t phase));
+  // Chamado logo antes do ESP.restart() disparado por uma config nova via
+  // MQTT, para dar chance de fechar (RESOLVED) os alarmes ainda abertos -
+  // senao o registro em RAM do AlarmManager e perdido no reboot sem o
+  // frontend nunca receber o fechamento.
+  void setPreRestartCallback(void (*cb)());
 
 private:
   WiFiClient m_wifiClient;
@@ -34,6 +39,7 @@ private:
   void (*m_configCb)(const Config &);
   void (*m_timeCb)(unsigned long);
   void (*m_ackCb)(bool all, AlarmType type, uint8_t phase);
+  void (*m_preRestartCb)();
 
   static void callback(char *topic, byte *payload, unsigned int len);
   static MqttManager *m_instance;

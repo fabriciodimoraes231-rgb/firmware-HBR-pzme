@@ -98,24 +98,35 @@ void flushOfflineBuffer() {
   }
 }
 
-void onAlarmAck(bool all, AlarmType type, uint8_t phase) {
+// Fecha (RESOLVED) todo alarme aberto no registro do AlarmManager. Usado
+// tanto pelo ack "all" quanto antes de um reboot forcado por config nova via
+// MQTT - nesse segundo caso o registro em RAM seria perdido silenciosamente
+// no restart, deixando o frontend esperando um RESOLVED que nunca viria.
+void resolveAllOpenAlarms() {
   String ts = timeManager.getTimestamp();
 
-  if (all) {
-    AlarmState resolved;
-    alarmManager.resolveAll(resolved);
-    for (uint8_t i = 0; i < resolved.count; i++) {
-      if (mqttManager.isConnected()) {
-        mqttManager.publishAlarm(config, resolved.events[i], "RESOLVED", ts,
-                                 resolved.physicallyActive[i]);
-      } else {
-        offlineBuffer.pushAlarmEvent(resolved.events[i], "RESOLVED", ts,
-                                     resolved.physicallyActive[i]);
-      }
+  AlarmState resolved;
+  alarmManager.resolveAll(resolved);
+  for (uint8_t i = 0; i < resolved.count; i++) {
+    if (mqttManager.isConnected()) {
+      mqttManager.publishAlarm(config, resolved.events[i], "RESOLVED", ts,
+                               resolved.physicallyActive[i]);
+    } else {
+      offlineBuffer.pushAlarmEvent(resolved.events[i], "RESOLVED", ts,
+                                   resolved.physicallyActive[i]);
     }
+  }
+}
+
+void onConfigRestartPending() { resolveAllOpenAlarms(); }
+
+void onAlarmAck(bool all, AlarmType type, uint8_t phase) {
+  if (all) {
+    resolveAllOpenAlarms();
     return;
   }
 
+  String ts = timeManager.getTimestamp();
   AlarmState resolved;
   if (!alarmManager.resolve(type, phase, resolved))
     return;
@@ -183,6 +194,7 @@ void setup() {
   mqttManager.setConfigCallback(onConfigUpdated);
   mqttManager.setTimeCallback(onTimeUpdated);
   mqttManager.setAlarmAckCallback(onAlarmAck);
+  mqttManager.setPreRestartCallback(onConfigRestartPending);
   mqttManager.connect(config);
   pzemSensor.init();
   aht10Sensor.init();
