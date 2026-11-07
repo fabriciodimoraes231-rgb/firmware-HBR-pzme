@@ -245,11 +245,11 @@ ninguém ter de fato tratado a causa.
 
 ```bash
 # Fecha um alarme especifico (tipo + fase; phase omitido = 0, usado por HIGH_TEMP)
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/alarm/ack" \
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/alarm/ack" \
   -m '{"alarm": "OVERVOLTAGE", "phase": 1}'
 
 # Fecha todos os alarmes abertos de uma vez
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/alarm/ack" \
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/alarm/ack" \
   -m '{"all": true}'
 ```
 

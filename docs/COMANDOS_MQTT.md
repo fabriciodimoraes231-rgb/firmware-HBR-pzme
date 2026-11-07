@@ -2,15 +2,17 @@
 
 **Prefixo padrao:** `vigiatech/setor/painel/CT`
 
+**Broker:** nos comandos abaixo, troque `<broker>` pelo endereco do seu broker MQTT.
+
 ---
 
 ## 1. Configurar tudo (envio completo)
 
 ```bash
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m '{
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{
   "wifi_ssid": "MinhaRede",
   "wifi_pass": "senha",
-  "mqtt_host": "10.170.50.29",
+  "mqtt_host": "<broker>",
   "mqtt_port": 1883,
   "mqtt_user": "usuario",
   "mqtt_pass": "senha",
@@ -34,7 +36,7 @@ mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m '{
 ## 2. Alterar apenas limites de alarme
 
 ```bash
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m '{
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{
   "v_max": 250,
   "v_min": 190,
   "a_max": 80,
@@ -48,7 +50,7 @@ mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m '{
 ## 3. Alterar prefixo do topico
 
 ```bash
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m '{
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{
   "mqtt_topic_prefix": "vigiatech/novo/prefixo"
 }'
 ```
@@ -56,7 +58,7 @@ mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m '{
 **Exemplo real** (se o ESP esta em `vigiatech/eletrical-room/energy-painel-04/esp01`):
 
 ```bash
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/eletrical-room/energy-painel-04/esp01/config" -m '{
+mosquitto_pub -h <broker> -t "vigiatech/eletrical-room/energy-painel-04/esp01/config" -m '{
   "mqtt_topic_prefix": "vigiatech/setor/painel/CT"
 }'
 ```
@@ -70,7 +72,7 @@ mosquitto_pub -h 10.170.50.29 -t "vigiatech/eletrical-room/energy-painel-04/esp0
 ## 4. Alterar intervalo de envio
 
 ```bash
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m '{
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{
   "send_interval_s": 10,
   "alarm_interval_s": 120
 }'
@@ -81,7 +83,7 @@ mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m '{
 ## 5. Calibracao (fator de correcao por fase)
 
 ```bash
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m '{
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{
   "v_factor": [0.9906, 1.0, 1.0],
   "a_factor": [1.0, 1.0, 1.0],
   "w_factor": [1.0, 1.0, 1.0]
@@ -96,14 +98,14 @@ mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m '{
 ## 6. Sincronizar relogio (epoch)
 
 ```bash
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/time" -m '{
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/time" -m '{
   "epoch": 1750698000
 }'
 ```
 
 Ou via texto:
 ```bash
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/time" -m '"09:28 23/06/2026"'
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/time" -m '"09:28 23/06/2026"'
 ```
 
 ---
@@ -165,7 +167,7 @@ vigiatech/setor/painel/CT/alarm/ack
 Fecha um alarme aberto (por tipo + fase):
 
 ```bash
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/alarm/ack" -m '{
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/alarm/ack" -m '{
   "alarm": "OVERVOLTAGE",
   "phase": 1
 }'
@@ -176,7 +178,7 @@ mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/alarm/ack" -m '{
 Fecha todos os alarmes abertos de uma vez:
 
 ```bash
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/alarm/ack" -m '{
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/alarm/ack" -m '{
   "all": true
 }'
 ```
@@ -222,7 +224,7 @@ Segure o **GPIO0 (BOOT)** por **>5 segundos** durante operacao normal.
 ## 11. Subscrever para monitorar
 
 ```bash
-mosquitto_sub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/#" -v
+mosquitto_sub -h <broker> -t "vigiatech/setor/painel/CT/#" -v
 ```
 
 ---
@@ -243,20 +245,20 @@ mosquitto_sub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/#" -v
 
 ```bash
 # Testar se o broker responde
-mosquitto_pub -h 10.170.50.29 -t "test/ping" -m "hello" -d
+mosquitto_pub -h <broker> -t "test/ping" -m "hello" -d
 
 # Verificar se o dispositivo esta online
-mosquitto_sub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/status" -v -C 1
+mosquitto_sub -h <broker> -t "vigiatech/setor/painel/CT/status" -v -C 1
 
 # Verificar se o topico existe
-mosquitto_sub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/#" -v -W 5
+mosquitto_sub -h <broker> -t "vigiatech/setor/painel/CT/#" -v -W 5
 ```
 
 ### Debug de payload
 
 ```bash
 # Enviar JSON formatado (com -d para debug)
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m '{"send_interval_s": 10}' -d
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m '{"send_interval_s": 10}' -d
 
 # Verificar se o JSON e valido
 echo '{"send_interval_s": 10}' | python3 -m json.tool
@@ -275,13 +277,13 @@ echo '{"send_interval_s": 10}' | python3 -m json.tool
 
 ```bash
 # Topico de status (QoS 1, Retain)
-mosquitto_sub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/status" -v
+mosquitto_sub -h <broker> -t "vigiatech/setor/painel/CT/status" -v
 
 # Topico de dados (leituras em tempo real)
-mosquitto_sub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/data" -v
+mosquitto_sub -h <broker> -t "vigiatech/setor/painel/CT/data" -v
 
 # Topico de alarmes
-mosquitto_sub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/alarm" -v
+mosquitto_sub -h <broker> -t "vigiatech/setor/painel/CT/alarm" -v
 ```
 
 ### Resetar dispositivo via MQTT
@@ -289,7 +291,7 @@ mosquitto_sub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/alarm" -v
 Para forcar um reset remoto, envie um payload invalido no topico `/config`:
 
 ```bash
-mosquitto_pub -h 10.170.50.29 -t "vigiatech/setor/painel/CT/config" -m 'invalid'
+mosquitto_pub -h <broker> -t "vigiatech/setor/painel/CT/config" -m 'invalid'
 ```
 
 O dispositivo descarta o payload e continua operando. Para resetar de verdade, use o botao GPIO0 (5s).
