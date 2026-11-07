@@ -236,7 +236,7 @@ sobre dados em memoria:
 pio test -e native
 ```
 
-13 casos cobrindo cada tipo de alarme e o ciclo `ALARM`/`RESOLVED`/`ALARM_REFRESH`
+19 casos cobrindo cada tipo de alarme e o ciclo `ALARM`/`RESOLVED`/`ALARM_REFRESH`
 em `test/test_alarm_manager/test_alarm_manager.cpp`. `config_manager` ainda nao
 tem testes automatizados — depende de `Preferences` (NVS do ESP32), precisaria
 de uma camada de abstracao antes de rodar nativamente.
